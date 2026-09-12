@@ -1,0 +1,109 @@
+#!/bin/bash
+# BG3 MetalFX pkg postinstall（root 运行）。
+# 安装内容：注入器 + Steam 启动包装器 + 本地化 mod + Steam 启动选项。
+set -u
+LOG=/var/tmp/bg3metalfx-install.log
+exec >>"$LOG" 2>&1
+echo "=== BG3 MetalFX install $(date) ==="
+
+PAYLOAD="/tmp/bg3metalfx-payload"
+CONSOLE_USER=$(stat -f %Su /dev/console)
+USER_HOME=$(eval echo "~$CONSOLE_USER")
+[ -d "$USER_HOME" ] || { echo "no user home"; exit 1; }
+echo "user=$CONSOLE_USER home=$USER_HOME"
+
+DEST="$USER_HOME/Library/Application Support/BG3MetalFX"
+GAME_DATA="$USER_HOME/Documents/Larian Studios/Baldur's Gate 3"
+MODS_DIR="$GAME_DATA/Mods"
+MOD_UUID="f3a7c1e2-9b4d-4e5a-8c6f-1d2e3f4a5b6c"
+
+# 1. 核心文件
+mkdir -p "$DEST/runs"
+cp "$PAYLOAD/libbg3mf_probe.dylib" "$DEST/"
+cp "$PAYLOAD/bg3mf_steam_launcher" "$DEST/"
+chmod 755 "$DEST/bg3mf_steam_launcher"
+cp "$PAYLOAD/uninstall.sh" "$DEST/"
+chmod 755 "$DEST/uninstall.sh"
+# 默认静默配置（最终用户不产生 trace/dump）
+cat > "$DEST/runs/launch_env" <<'ENVEOF'
+BG3MF_TEMPORAL=1
+BG3MF_SCALE_PATCH=1
+ENVEOF
+
+# 2. 本地化 mod
+mkdir -p "$MODS_DIR"
+rm -rf "$MODS_DIR/BG3MetalFX"
+cp -R "$PAYLOAD/mod/BG3MetalFX" "$MODS_DIR/"
+
+# 3. 注册 modsettings.lsx（幂等）
+MS="$GAME_DATA/PlayerProfiles/Public/modsettings.lsx"
+if [ -f "$MS" ] && ! grep -q "$MOD_UUID" "$MS"; then
+  cp "$MS" "$MS.bg3metalfx.bak"
+  MODORDER='                <node id="ModOrder">
+                    <children>
+                        <node id="Module">
+                            <attribute id="UUID" type="guid" value="'"$MOD_UUID"'"/>
+                        </node>
+                    </children>
+                </node>'
+  SHORTDESC='                        <node id="ModuleShortDesc">
+                            <attribute id="Folder" type="LSString" value="BG3MetalFX"/>
+                            <attribute id="MD5" type="LSString" value=""/>
+                            <attribute id="Name" type="LSString" value="BG3MetalFX"/>
+                            <attribute id="PublishHandle" type="uint64" value="0"/>
+                            <attribute id="UUID" type="guid" value="'"$MOD_UUID"'"/>
+                            <attribute id="Version64" type="int64" value="36028797018963968"/>
+                        </node>'
+  awk -v modorder="$MODORDER" -v shortdesc="$SHORTDESC" '
+    /^[[:space:]]*<node id="Mods">$/ && !mo { print modorder; mo=1 }
+    /^[[:space:]]*<\/children>$/ && inmods && !sd { print shortdesc; sd=1; inmods=0 }
+    /^[[:space:]]*<node id="Mods">$/ { inmods=1 }
+    { print }
+  ' "$MS.bg3metalfx.bak" > "$MS"
+  echo "modsettings registered"
+else
+  echo "modsettings: already registered or file missing"
+fi
+
+# 4. Steam 启动选项（每个 userdata 的 localconfig.vdf，幂等）
+LAUNCHER="$DEST/bg3mf_steam_launcher"
+for VDF in "$USER_HOME/Library/Application Support/Steam/userdata"/*/config/localconfig.vdf; do
+  [ -f "$VDF" ] || continue
+  if grep -q 'bg3mf_steam_launcher' "$VDF"; then
+    echo "launch option already set: $VDF"
+    continue
+  fi
+  cp "$VDF" "$VDF.bg3metalfx.bak"
+  awk -v launcher="\"$LAUNCHER\" %command%" '
+    BEGIN { depth=0; inapps=0; inapp=0; done=0 }
+    {
+      line=$0
+      if (!done && line ~ /"1086940"/) { inapp_next=1 }
+      if (inapp_next && line ~ /{/) { inapp=1; inapp_next=0; print; print "\t\"LaunchOptions\"\t\t\"" launcher "\""; done=1; next }
+      if (inapp && line ~ /"LaunchOptions"/) { next }
+      print
+    }
+    END {
+      if (!done) print "//BG3MF_NOAPPBLOCK"
+    }
+  ' "$VDF.bg3metalfx.bak" > "$VDF.awkout"
+  if grep -q '//BG3MF_NOAPPBLOCK' "$VDF.awkout"; then
+    # 没有 1086940 块：用户尚未玩过/无记录，跳过（首次玩过后可重装或手动设置）
+    mv "$VDF.bg3metalfx.bak" "$VDF"
+    echo "no 1086940 app block in $VDF; skipped"
+  else
+    mv "$VDF.awkout" "$VDF"
+    echo "launch option set: $VDF"
+  fi
+  rm -f "$VDF.awkout"
+done
+
+# 5. 归属
+chown -R "$CONSOLE_USER:staff" "$DEST" "$MODS_DIR/BG3MetalFX" 2>/dev/null
+[ -f "$MS" ] && chown "$CONSOLE_USER:staff" "$MS" "$MS.bg3metalfx.bak" 2>/dev/null
+
+if pgrep -x steam_osx >/dev/null; then
+  echo "NOTE: Steam is running; user must restart Steam for the launch option to take effect."
+fi
+echo "=== install done ==="
+exit 0

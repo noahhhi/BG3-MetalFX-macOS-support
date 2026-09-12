@@ -10,7 +10,7 @@
 void bg3mf_observer_log(const char *);
 extern void bg3mf_dump_easu_textures(id, id, id);
 static BOOL checked, enabled;
-static id<MTLTexture> depthSource, velocity, pendingColor, pendingMotion, pendingOutput;
+static id<MTLTexture> depthSource, velocity, pendingColor, pendingMotion;
 static id<MTLTexture> depthR32, scaledHDR;
 static id<MTLComputePipelineState> depthPipeline, compressPipeline;
 static id<MTLDevice> device;
@@ -97,8 +97,8 @@ static BOOL prepare(id<MTLTexture> c, id<MTLTexture> m, id<MTLTexture> o, NSUInt
         (m.usage & scaler.motionTextureUsage) == scaler.motionTextureUsage;
 }
 
-// Returns 1 only for a native-resolution replacement. The low-resolution stock TAA
-// is left valid for unrelated consumers, but its filtered color never enters MetalFX.
+// Keep the low-resolution stock TAA valid for unrelated consumers (return 0),
+// but never feed its filtered color into MetalFX. Upscaling Off stays native.
 // *scheduled tells the observer to encode MetalFX even when the stock draw is retained.
 int bg3mf_tb_record_taa(const void *color, const void *motion, const void *output,
                         const void *buffer, unsigned long offset, int *scheduled) {
@@ -112,7 +112,9 @@ int bg3mf_tb_record_taa(const void *color, const void *motion, const void *outpu
     // Learn the game's actual output size at EASU, no screen/native-size assumption.
     // A first FSR frame or resize uses the intact stock FSR chain until sizes match.
     BOOL upscale = fsrOW > c.width && fsrOH > c.height;
-    if (upscale) { w = fsrOW; h = fsrOH; }
+    // Upscaling Off must retain the actual native game AA, not a hidden MetalFX path.
+    if (!upscale) { ready=NO; needReset=true; return 0; }
+    w = fsrOW; h = fsrOH;
     @try {
         if (!prepare(c,m,o,w,h)) return 0;
         jitterX = jitterY = 0;
@@ -123,9 +125,9 @@ int bg3mf_tb_record_taa(const void *color, const void *motion, const void *outpu
                 if (std::isfinite(j[0]) && std::isfinite(j[1])) { jitterX=j[0]; jitterY=j[1]; }
             }
         }
-        pendingColor=c; pendingMotion=m; pendingOutput=upscale ? nil : o;
+        pendingColor=c; pendingMotion=m;
         *scheduled=1;
-        return upscale ? 0 : 1;
+        return 0;
     } @catch (NSException *e) {
         bg3mf_observer_log("tb: preparation failed; using stock rendering"); return 0;
     }
@@ -134,8 +136,8 @@ int bg3mf_tb_record_taa(const void *color, const void *motion, const void *outpu
 void bg3mf_tb_encode_if_pending(const void *cbPtr) {
     if (!pendingColor || !cbPtr) return;
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbPtr;
-    id<MTLTexture> c=pendingColor, m=pendingMotion, o=pendingOutput;
-    pendingColor=nil; pendingMotion=nil; pendingOutput=nil;
+    id<MTLTexture> c=pendingColor, m=pendingMotion;
+    pendingColor=nil; pendingMotion=nil;
     @try {
         id<MTLComputeCommandEncoder> ce=[cb computeCommandEncoder];
         [ce setComputePipelineState:depthPipeline]; [ce setTexture:depthSource atIndex:0]; [ce setTexture:depthR32 atIndex:1];
@@ -147,12 +149,6 @@ void bg3mf_tb_encode_if_pending(const void *cbPtr) {
         scaler.motionVectorScaleX=-1; scaler.motionVectorScaleY=-1;
         scaler.depthReversed=YES; scaler.preExposure=1; scaler.reset=needReset.exchange(false);
         [scaler encodeToCommandBuffer:cb];
-        if (o) {
-            id<MTLBlitCommandEncoder> b=[cb blitCommandEncoder];
-            [b copyFromTexture:scaledHDR sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
-                    sourceSize:MTLSizeMake(ow,oh,1) toTexture:o destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
-            [b endEncoding];
-        }
         ready=YES; readyIW=iw; readyIH=ih;
         bg3mf_dump_easu_textures(c,scaledHDR,cb);
         long n=frames++;

@@ -178,7 +178,7 @@ int main(int argc,char **argv) {
         for(NSString *name in @[@"libbg3mf_probe.dylib",@"bg3mf_steam_launcher",@"bg3mf_installer",@"uninstall.sh"]) writes[join(dest,name)]=read(join(payload,name));
         NSData *mod=read(join(payload,@"mod/BG3MetalFX.pak"));require(mod.length>=40 && memcmp(mod.bytes,"LSPK",4)==0,@"Invalid localization PAK");writes[pak]=mod;
         writes[join(dest,@"runs/launch_env")]=utf8(@"BG3MF_TEMPORAL=1\nBG3MF_SCALE_PATCH=1\n");
-        state[@"launchOptions"]=launchState;state[@"version"]=@"1.0.1";
+        state[@"launchOptions"]=launchState;state[@"version"]=@"1.0.2";
         writes[statePath]=[NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:nil];
     } else if([fm fileExistsAtPath:pak])[deletes addObject:pak];
     // Validate every document before modifying anything. Roll back all touched files

@@ -7,9 +7,9 @@
 
 Native [MetalFX Temporal](https://developer.apple.com/documentation/metalfx) upscaling for the macOS Steam release of *Baldur's Gate 3* (AppID 1086940). It replaces the FSR 1.0 spatial upscale with Apple's temporal reconstruction, using the game's current HDR color, motion vectors, depth and camera jitter.
 
-Select **Options → Video → Upscaling Type → MetalFX**, and keep **Anti-Aliasing → TAA** enabled. The name and description are supplied by a localization mod with all 15 game languages. The injection uses a Steam launch option; it does not modify the game bundle or saves.
+Select **Options → Video → Upscaling Type → MetalFX**. The mod automatically selects **TAA**, sets **Upscaling Sharpness to 0**, and locks both controls while MetalFX is active. The name and description are supplied by a localization mod with all 15 game languages. Chinese upscaling labels and help text are also corrected. The injection uses a Steam launch option; it does not modify the game bundle or saves.
 
-Current reference test: Apple M4 Pro, macOS 27, native arm64 Steam build **4.1.1.7398727**. Real save loading and 3D rendering were checked at Ultra Quality and Performance; all four internal render sizes were observed live. See [validation details](docs/VALIDATION.md) for coverage and limits.
+Current reference test: Apple M4 Pro, macOS 27, native arm64 Steam build **4.1.1.7398727**. All four MetalFX tiers and native TAA were measured in the same real save at 3456 × 2234, High preset, with the 10 FPS cap disabled and AC power connected. See [validation details](docs/VALIDATION.md) for coverage and limits.
 
 <p align="center">
   <img src="docs/images/settings-metalfx-zh.png" alt="BG3 video settings showing MetalFX and its Chinese description" width="900">
@@ -30,13 +30,13 @@ Current reference test: Apple M4 Pro, macOS 27, native arm64 Steam build **4.1.1
 - Apple Silicon Mac (arm64), macOS 13 or later, with MetalFX Temporal support. Only the reference machine above has been tested.
 - The native macOS Steam release of Baldur's Gate 3, build 4.1.1.7398727.
 - Launch the game at least once to create its Steam and player profiles, then quit **both the game and Steam** before installing or uninstalling.
-- Leave anti-aliasing set to **TAA**: the mod uses that render stage and its jitter. SMAA and Off do not activate this temporal path.
+- MetalFX uses the game's TAA stage and camera jitter. TAA is applied automatically; no manual anti-aliasing setup is needed.
 
 ## One-click install
 
 Download **`BG3-MetalFX-arm64.pkg`** from [GitHub Releases](https://github.com/noahhhi/BG3-MetalFX-macOS-support/releases/latest) and double-click it. The installer places the injector, launcher and uninstaller in `~/Library/Application Support/BG3MetalFX/`, installs `BG3MetalFX.pak` in the user Mods directory, registers the mod in existing player profiles, and updates only BG3's Steam launch option.
 
-Start Steam again, launch the game as usual, and choose **MetalFX** with **TAA** enabled. When loading an existing save, the game may ask you to enable the newly added BG3MetalFX mod. The localization mod contains no gameplay changes.
+Start Steam again, launch the game as usual, and choose **MetalFX**. TAA and zero upscaling sharpness are enforced automatically. When loading an existing save, the game may ask you to enable the newly added BG3MetalFX mod. The localization mod contains no gameplay changes.
 
 The ZIP is a portable fallback: extract **`BG3-MetalFX-arm64.zip`**, then double-click **`Install BG3 MetalFX.command`** or run `bash install.sh` from the extracted folder. The same native installer handles both methods; users do not need Python, CMake or Xcode.
 
@@ -62,15 +62,15 @@ If the PKG reports an installation failure, this command creates `BG3MF-install-
 
 These are the mod's chosen ratios, one tier lower than BG3's stock FSR 1.0 ratios. Actual dimensions are rounded by the game. If a video-setting change does not rebuild the render targets, restart the game.
 
-With Upscaling Type set to **Off** and anti-aliasing set to **TAA**, the bridge supplies MetalFX temporal anti-aliasing at the current rendering resolution.
+With Upscaling Type set to **Off**, the game uses its original rendering and anti-aliasing. The anti-aliasing selector becomes editable again; **TAA** gives a native-resolution TAA baseline.
 
 ## How it works
 
 - A small Steam wrapper adds the injector through `DYLD_INSERT_LIBRARIES`, preserving Steam's own overlay injection and existing launch arguments.
 - At the TAA render stage, MetalFX reads the unfiltered current HDR color, motion vectors, device depth converted to R32Float, and jitter. The temporal scaler runs after that render encoder ends.
-- At EASU, a compute kernel compresses the reconstructed HDR color into the game's existing intermediate texture. This executes inside the original compute encoder, before the unchanged RCAS sharpening/inverse-compression pass and later consumers. The stock TAA may remain for other consumers, but its filtered output is not fed into MetalFX.
-- The FSR quality-ratio table is changed in process memory after checking its mapped address and original values. Nothing is patched on disk.
-- A standard LSPK v18 mod contains two XML string overrides for each of the 15 languages, following [Larian's localization format](https://docs.baldursgate3.game/index.php?title=Adding_Localisation).
+- At EASU, a compute kernel compresses the reconstructed HDR color into the game's existing intermediate texture. This executes inside the original compute encoder, before the unchanged RCAS sharpening/inverse-compression pass and later consumers. The stock low-resolution TAA remains for other consumers, but its filtered output is not fed into MetalFX.
+- The FSR quality-ratio table and native option policy are changed in process memory after checking mapped addresses and original values/instructions. The policy applies TAA and zero upscaling sharpness on startup and mode changes, and uses the game's own disabled-control notifications. Nothing is patched on disk.
+- A standard LSPK v18 mod contains name/description XML overrides for all 15 languages, plus corrected Simplified and Traditional Chinese upscaling labels and help, following [Larian's localization format](https://docs.baldursgate3.game/index.php?title=Adding_Localisation).
 
 ## Uninstall
 
@@ -86,9 +86,10 @@ It removes the injector and localization PAK, removes only BG3MetalFX's mod regi
 
 - v1.0.0 had a black-screen defect and a localization-loading defect. Use v1.0.1 or later.
 - This is an experimental hook for the specific native game build above. Other game builds, Intel/Rosetta, HDR output, split-screen, multiplayer and every possible scene/effect have not been validated.
-- TAA must remain enabled. The mod does not add frame generation or an achievement-enabling patch. BG3's usual mod/profile rules apply.
-- Temporal history resets on scaler size/format changes and GPU errors. There is no explicit game camera-cut/reset integration; transient trails or softening can occur around scene cuts or disocclusions.
-- The reference game was capped at 10 FPS by its existing settings. The validation demonstrates rendering and dimensions, **not an uncapped FPS improvement** or a general image-quality comparison. A [capped GPU-load comparison](docs/VALIDATION.md#gpu-load-with-the-existing-10-fps-cap) found lower active-time occupancy than native TAA, but did not establish lower GPU power or heat.
+- TAA is forced on while MetalFX is active. Its unfiltered input feeds MetalFX; the TAA-filtered output does not. The mod does not add frame generation or an achievement-enabling patch. BG3's usual mod/profile rules apply.
+- Temporal history resets when returning from native rendering, on scaler size/format changes and GPU errors. There is no explicit game camera-cut/reset integration; transient trails or softening can occur around scene cuts or disocclusions.
+- Visible brightness/color differences from native TAA remain in the tested scene; general image-quality parity is not established.
+- Performance depends on the scene, settings and frame cap. See the [current validation status](docs/VALIDATION.md); older capped-load measurements are preserved in the versioned report and must not be converted into FPS gains.
 - The Simplified Chinese interface was checked live; remaining translations are packaged and structurally checked, not individually tested in the game.
 
 ## Building from source

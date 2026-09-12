@@ -231,11 +231,12 @@ int main(void) {
             for (NSUInteger x=result.width/4; x<result.width*3/4; x+=8) {
                 uint32_t px = *(uint32_t*)((char*)readback.contents+y*rb+x*4);
                 unsigned r=px&2047, g=(px>>11)&2047, b=(px>>22)&1023;
-                good += (r < 0x100 && g >= 0x370 && g <= 0x390 && b < 0x80);
+                good += fsr ? (r < 0x100 && g >= 0x370 && g <= 0x390 && b < 0x80)
+                            : (r == 0x340 && g == 0x380 && b == 0x1d0);
                 total++;
             }
         }
-        printf("%s pixels matching green input: %u/%u\n", fsr ? "FSR" : "TAA", good, total);
+        printf("%s pixels matching expected color: %u/%u\n", fsr ? "FSR" : "TAA", good, total);
         BOOL pass = good == total && total > 0;
         printf("BRIDGE_SIM_RESULT %s\n", pass ? "PASS" : "FAIL");
         return pass ? 0 : 1;

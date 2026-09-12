@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the two-string XML localization overrides as LSPK v18.
+"""Package the XML localization overrides as LSPK v18.
 
 Format reference: https://github.com/Norbyte/lslib/blob/master/LSLib/LS/PackageFormat.cs
 No game assets or third-party Python packages are needed. Data entries are stored
@@ -28,7 +28,8 @@ def build(source, destination):
     files = {"Mods/BG3MetalFX/meta.lsx": (source / "meta.lsx").read_bytes()}
     for xml in sorted((source / "Localization").glob("*/*.xml")):
         entries = ET.parse(xml).getroot().findall("content")
-        assert len(entries) == 2 and all(e.attrib.get("version") == "2" for e in entries)
+        assert len(entries) >= 2 and all(e.attrib.get("version") == "2" for e in entries)
+        assert len({e.attrib["contentuid"] for e in entries}) == len(entries)
         files[f"Mods/BG3MetalFX/Localization/{xml.parent.name}/{xml.name}"] = xml.read_bytes()
     assert len(files) == 16, "Expected meta.lsx and 15 localizations"
     payload, table = bytearray(40), bytearray()

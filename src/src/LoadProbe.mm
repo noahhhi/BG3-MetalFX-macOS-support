@@ -59,7 +59,7 @@ static void bg3mf_install_exc_handler(void) {
     bg3mf_log("BG3MF_EXC_HOOK", "installed");
 }
 
-#define BG3MF_PROBE_BUILD_ID "loadprobe-a2 " __DATE__ " " __TIME__
+#define BG3MF_PROBE_BUILD_ID "bg3-metalfx-1.0.2 " __DATE__ " " __TIME__
 
 // 运行根目录：BG3MF_HOME 环境变量优先，默认 ~/Library/Application Support/BG3MetalFX。
 // 日志/哨兵/抓取等全部派生自此；开发时可用 BG3MF_HOME 指向项目 runs 的父目录。
@@ -329,6 +329,7 @@ static void bg3mf_install_spawn_bridge(void) {
 }
 
 void bg3mf_scale_patch_install(void);
+void bg3mf_settings_policy_install(void);
 
 // ---------------------------------------------------------------------------
 __attribute__((constructor)) static void bg3mf_probe_init(void) {
@@ -339,6 +340,7 @@ __attribute__((constructor)) static void bg3mf_probe_init(void) {
     }
     bg3mf_probe_write();
     bg3mf_install_spawn_bridge();
+    bg3mf_settings_policy_install();
     bg3mf_scale_patch_install();  // 尽早：引擎首次创建渲染目标前
 
     // 阶段 B：只观测 Metal API。默认延迟 3s 避开 dyld/启动早期；

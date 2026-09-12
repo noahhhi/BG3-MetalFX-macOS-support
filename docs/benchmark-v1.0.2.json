@@ -1,0 +1,150 @@
+{
+  "version": "1.0.2",
+  "date": "2026-09-13",
+  "device": "Apple M4 Pro",
+  "memory_gib": 48,
+  "os": "macOS 27.0 (26A428)",
+  "game": "4.1.1.7398727 arm64 Steam",
+  "output": [
+    3456,
+    2234
+  ],
+  "preset": "High",
+  "power": "AC, battery charging",
+  "frame_cap_enabled": false,
+  "display_hz": 120,
+  "vsync": "triple-buffered",
+  "warmup_seconds": 30,
+  "requested_sample_seconds": 60,
+  "scene": "Nautiloid membrane door, fixed camera",
+  "order": [
+    "native-taa",
+    "ultra-quality",
+    "quality",
+    "balanced",
+    "performance"
+  ],
+  "rows": [
+    {
+      "mode": "native-taa",
+      "intervals": 50,
+      "frames": 1371,
+      "seconds": 57.97488737106323,
+      "fps": 23.648170133130808,
+      "mean_present_interval_ms": 42.292616915878725,
+      "worst_present_interval_ms": 58.333208347903565,
+      "skipped_frames": 0,
+      "metalfx_frames": 0,
+      "temporal_frames": 0,
+      "gpu_samples": 55,
+      "gpu_active_pct": 100.0,
+      "gpu_power_w": 30.7557109485973,
+      "gpu_temp_c": 84.0981049971147,
+      "gpu_clock_mhz": 1578,
+      "foreground_verified": true,
+      "bridge_input_sizes": [],
+      "bridge_output_sizes": [],
+      "bridge_sampled_fps": null
+    },
+    {
+      "mode": "ultra-quality",
+      "intervals": 59,
+      "frames": 1914,
+      "seconds": 59.121160447597504,
+      "fps": 32.37419538976216,
+      "mean_present_interval_ms": 30.899434038652,
+      "worst_present_interval_ms": 49.9999166931957,
+      "skipped_frames": 0,
+      "metalfx_frames": 1371,
+      "temporal_frames": 1371,
+      "gpu_samples": 54,
+      "gpu_active_pct": 100.0,
+      "gpu_power_w": 27.818125548186124,
+      "gpu_temp_c": 80.93711287887008,
+      "gpu_clock_mhz": 1578,
+      "foreground_verified": true,
+      "bridge_input_sizes": [
+        "2304x1489"
+      ],
+      "bridge_output_sizes": [
+        "3456x2234"
+      ],
+      "bridge_sampled_fps": 32.33088192977912
+    },
+    {
+      "mode": "quality",
+      "intervals": 52,
+      "frames": 2210,
+      "seconds": 59.8037074804306,
+      "fps": 36.95423065071964,
+      "mean_present_interval_ms": 27.060639630458994,
+      "worst_present_interval_ms": 49.99991666409187,
+      "skipped_frames": 0,
+      "metalfx_frames": 1692,
+      "temporal_frames": 1692,
+      "gpu_samples": 55,
+      "gpu_active_pct": 100.0,
+      "gpu_power_w": 27.332461235739967,
+      "gpu_temp_c": 80.9214921431108,
+      "gpu_clock_mhz": 1578,
+      "foreground_verified": true,
+      "bridge_input_sizes": [
+        "2032x1314"
+      ],
+      "bridge_output_sizes": [
+        "3456x2234"
+      ],
+      "bridge_sampled_fps": 36.969340856566994
+    },
+    {
+      "mode": "balanced",
+      "intervals": 46,
+      "frames": 2453,
+      "seconds": 57.99150025844574,
+      "fps": 42.299302295473055,
+      "mean_present_interval_ms": 23.64105887348846,
+      "worst_present_interval_ms": 49.99979166314006,
+      "skipped_frames": 0,
+      "metalfx_frames": 2055,
+      "temporal_frames": 2055,
+      "gpu_samples": 55,
+      "gpu_active_pct": 100.0,
+      "gpu_power_w": 26.37308554215865,
+      "gpu_temp_c": 80.29955721768467,
+      "gpu_clock_mhz": 1578,
+      "foreground_verified": true,
+      "bridge_input_sizes": [
+        "1728x1117"
+      ],
+      "bridge_output_sizes": [
+        "3456x2234"
+      ],
+      "bridge_sampled_fps": 42.25888679362686
+    },
+    {
+      "mode": "performance",
+      "intervals": 51,
+      "frames": 3134,
+      "seconds": 59.01186525821686,
+      "fps": 53.10796373384621,
+      "mean_present_interval_ms": 18.828393121149457,
+      "worst_present_interval_ms": 41.66654165601358,
+      "skipped_frames": 0,
+      "metalfx_frames": 2051,
+      "temporal_frames": 2051,
+      "gpu_samples": 54,
+      "gpu_active_pct": 100.0,
+      "gpu_power_w": 24.829011457937735,
+      "gpu_temp_c": 78.77395092999494,
+      "gpu_clock_mhz": 1578,
+      "foreground_verified": true,
+      "bridge_input_sizes": [
+        "1175x759"
+      ],
+      "bridge_output_sizes": [
+        "3456x2234"
+      ],
+      "bridge_sampled_fps": 53.091243533258286
+    }
+  ]
+}

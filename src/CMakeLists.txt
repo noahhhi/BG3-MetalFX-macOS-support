@@ -20,6 +20,7 @@ add_library(bg3mf_probe SHARED
   src/TraceWriter.mm
   src/TemporalBridge.mm
   src/ScalePatch.mm
+  src/SettingsPolicy.mm
 )
 set_target_properties(bg3mf_probe PROPERTIES
   PREFIX "lib"

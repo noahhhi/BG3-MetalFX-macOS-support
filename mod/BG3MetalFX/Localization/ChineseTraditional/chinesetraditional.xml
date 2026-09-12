@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <contentList>
     <content contentuid="h99eaeb3ag3d0fg4815g8a0cgc81b319b1926" version="2">MetalFX</content>
-    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="2">Apple MetalFX 時域超分是平台最佳化的超解析度技術。
+    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="2">Apple MetalFX 時域上採樣是針對 Apple 平台最佳化的影像重建技術。
 
 它結合抖動渲染與跨多影格的時間累積，從較低解析度的渲染中重建出接近原生品質的影像，在維持畫質的同時提升效能。</content>
+    <content contentuid="h07ddcd96g848cg45d8ga3d9gf62c3a025129" version="2">停用上採樣。</content>
+    <content contentuid="h2c51da31g84cfg4789gabc1g8541d249ada5" version="2">上採樣模式</content>
+    <content contentuid="h6ed530e7ga153g43e3gaa82g69813f3787e4" version="2">選擇上採樣的畫質與效能模式。僅在啟用上採樣時可用。</content>
+    <content contentuid="h7387b7ffgbdf1g4497gb6aeg7899fba57a12" version="2">上採樣銳利度</content>
+    <content contentuid="h970a76efge561g47c7gaa53g919018bc0bb3" version="2">選擇上採樣技術。遊戲先以較低解析度繪製，再重建至所選的輸出解析度。可用選項取決於裝置。</content>
+    <content contentuid="ha97aaeb3g6757g45e5g9e74ge9fb54a2817f" version="2">調整上採樣的銳化強度。啟用 MetalFX 時固定為 0，無法調整。</content>
+    <content contentuid="hb59fd850g1a8dg45e4g8988gd82dc65e9338" version="2">上採樣類型</content>
+    <content contentuid="hcb2cdb6bgd085g4fe6gbe5cg2ca8257e5fbd" version="2">AMD FidelityFX Super Resolution 2 (FSR2) 是一種開源上採樣技術，可從較低解析度的輸入重建高解析度畫面。</content>
 </contentList>

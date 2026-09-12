@@ -2,7 +2,7 @@
 set -euo pipefail
 export COPYFILE_DISABLE=1
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=1.0.1
+VERSION=1.0.2
 DIST="$REPO/dist"
 WORK=$(mktemp -d "$REPO/.pkg-build.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT

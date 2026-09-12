@@ -29,6 +29,7 @@ Summaries: [benchmark-v1.0.2.json](benchmark-v1.0.2.json). Screenshots: [High pr
 - Ten build-specific in-memory patches check all original instructions before writing. Initialization, mode-change callbacks and reset paths use the game's control-disabled notifications. The disk executable is not patched.
 - Simplified Chinese labels/help now use **上采样**. The zero-sharpness explanation and locked controls were inspected live. Traditional Chinese equivalents were packaged and structurally checked, but not inspected in that game language.
 - Four FSR-chain regressions passed **2040/2040**, **2652/2652**, **3600/3600**, **7906/7906** expected-color pixels. The native-AA control with unused FSR pipeline objects passed **920/920**. Synthetic correctness is separate from real-save performance.
+- The installer now emits compact/self-closing LSX attributes. Expanded empty attributes left the localization disabled in the upgrade check; compact serialization loaded MetalFX and corrected Chinese labels on cold startup without a save-load enable step.
 - Installer fixture tests passed roundtrips, repeated installation, argument preservation, old-wrapper migration, rejection of malformed inputs and protection of later user edits.
 
 ### Limits
@@ -66,6 +67,7 @@ Runtime binaries are ad-hoc signed; the PKG is unsigned. Package payloads and ch
 - 十处针对特定版本的进程内补丁在写入前检查全部原指令。初始化、模式切换回调与重置路径使用游戏原有控件禁用通知，不修改磁盘上的游戏可执行文件。
 - 简体中文标签与说明统一使用**上采样**，已实机检查零锐度说明和灰显控件。繁体中文对应文本已打包并完成结构检查，未切换游戏语言实测。
 - 四档 FSR 链路回归分别为 **2040/2040、2652/2652、3600/3600、7906/7906** 像素符合预期；已创建但未使用 FSR 管线对象的原生抗锯齿对照为 **920/920**。合成正确性测试与真实存档性能证据分开。
+- 安装器改为输出自闭合 LSX 属性。升级检查中，展开的空属性使本地化处于禁用状态；改用自闭合格式后，冷启动直接加载 MetalFX 与校正后的中文，无需在存档提示中启用。
 - 安装器隔离测试通过安装卸载、重复安装、启动参数保留、旧包装器迁移、拒绝损坏输入及保护用户后续修改等用例。
 
 ### 限制

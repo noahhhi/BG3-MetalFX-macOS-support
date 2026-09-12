@@ -110,7 +110,8 @@ static NSData *modsettings(NSData *data,BOOL install) {
             [list addChild:n];
         }
     }
-    return [doc XMLDataWithOptions:NSXMLNodePrettyPrint];
+    // Match the game's compact LSX attributes, including newly created nodes.
+    return [doc XMLDataWithOptions:NSXMLNodePrettyPrint | NSXMLNodeCompactEmptyElement];
 }
 
 int main(int argc,char **argv) {

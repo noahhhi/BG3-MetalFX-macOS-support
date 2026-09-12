@@ -1,6 +1,6 @@
 // FSR1 画质档位 ratio 表运行时补丁（阶段 E2 前置）。
 //
-// 游戏内建表（__DATA_CONST，arm64 VA 0x10873a070）为官方 FSR1 四档：
+// 游戏内建表（__TEXT 只读段，arm64 VA 0x107872d60；fat 文件 x86_64 slice 另有其架构副本）为官方 FSR1 四档：
 //   极高品质=1.3x  品质=1.5x  平衡=1.7x  性能=2.0x
 // 实测确认 mode=2（平衡）→ 内部渲染 3456/1.7=2032。
 // 按需求改为"每档降一级"的 MetalFX 映射：
@@ -19,7 +19,7 @@
 void bg3mf_observer_log(const char *msg);
 
 // 表的 arm64 静态 VA（交接研究核实，见 HANDOFF）
-#define BG3_FSR1_TABLE_STATIC_VA 0x10873a070ULL
+#define BG3_FSR1_TABLE_STATIC_VA 0x107872d60ULL
 
 static const float kOrigTable[4] = {1.3f, 1.5f, 1.7f, 2.0f};
 static const float kPatchTable[4] = {1.5f, 1.7f, 2.0f, 2.9411765f};
@@ -47,6 +47,20 @@ void bg3mf_scale_patch_install(void) {
         }
     }
     float *tab = (float *)(uintptr_t)(BG3_FSR1_TABLE_STATIC_VA + slide);
+    // The checked address must belong to a readable segment of this executable.
+    // Unknown future builds and synthetic hosts must never dereference arbitrary VA.
+    bool mapped = false;
+    const struct load_command *lc = (const struct load_command *)(exec + 1);
+    for (uint32_t j = 0; j < exec->ncmds; ++j) {
+        if (lc->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            uint64_t va = BG3_FSR1_TABLE_STATIC_VA;
+            if ((seg->initprot & VM_PROT_READ) && va >= seg->vmaddr &&
+                va - seg->vmaddr <= seg->vmsize && seg->vmsize - (va - seg->vmaddr) >= sizeof(kOrigTable)) mapped = true;
+        }
+        lc = (const struct load_command *)((const char *)lc + lc->cmdsize);
+    }
+    if (!mapped) { bg3mf_observer_log("scalepatch: address outside executable segments; skip"); return; }
     if (memcmp(tab, kOrigTable, sizeof(kOrigTable)) != 0) {
         bg3mf_observer_log("scalepatch: table content mismatch, skip");
         return;

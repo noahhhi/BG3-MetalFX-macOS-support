@@ -57,3 +57,23 @@ vertex SimVSOut LinearizeDepth_VS(uint vid [[vertex_id]]) {
 fragment float4 LinearizeDepth_PS(SimVSOut in [[stage_in]]) {
     return float4(0.01, 0.0, 0.0, 1.0);
 }
+
+// FSR-chain sentinel shaders: a correct bridge replaces these magenta writes.
+kernel void FSR(texture2d<float, access::read> src [[texture(0)]],
+                texture2d<float, access::write> dst [[texture(1)]],
+                uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x < dst.get_width() && gid.y < dst.get_height())
+        dst.write(float4(1, 0, 1, 1), gid);
+}
+kernel void FSR_RCAS(texture2d<float, access::read> src [[texture(0)]],
+                     texture2d<float, access::write> dst [[texture(2)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x < dst.get_width() && gid.y < dst.get_height())
+    { float3 c = src.read(gid).rgb; dst.write(float4(c / max(0.000030517578125f, 1.0f - max(c.r, max(c.g,c.b))),1),gid); }
+}
+
+kernel void consume_fsr(texture2d<float, access::read> src [[texture(0)]],
+                        texture2d<float, access::write> dst [[texture(2)]],
+                        uint2 p [[thread_position_in_grid]]) {
+    if (p.x < dst.get_width() && p.y < dst.get_height()) dst.write(src.read(p),p);
+}

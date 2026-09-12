@@ -14,7 +14,7 @@
 import json, struct, sys, os, math, glob
 import numpy as np
 
-CAP = "/Users/noah/Documents/Qoder/2026-09-11/chat-1/bg3-metalfx/runs/capture"
+CAP = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/Library/Application Support/BG3MetalFX/runs/capture")
 
 def half_to_float(arr_u16):
     return arr_u16.view(np.float16).astype(np.float32)

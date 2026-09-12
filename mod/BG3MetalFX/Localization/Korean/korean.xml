@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <contentList>
-    <content contentuid="h99eaeb3ag3d0fg4815g8a0cgc81b319b1926" version="1">MetalFX</content>
-    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="1">Apple MetalFX Temporal 업스케일링은 플랫폼에 최적화된 업스케일링 기술입니다.
+    <content contentuid="h99eaeb3ag3d0fg4815g8a0cgc81b319b1926" version="2">MetalFX</content>
+    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="2">Apple MetalFX Temporal 업스케일링은 플랫폼에 최적화된 업스케일링 기술입니다.
 
 지터 렌더링과 여러 프레임에 걸친 시간적 누적을 결합하여 낮은 해상도 렌더링에서 네이티브에 가까운 화질을 재구성하고, 시각적 충실도를 유지하면서 성능을 향상시킵니다.</content>
 </contentList>

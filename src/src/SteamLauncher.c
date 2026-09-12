@@ -20,10 +20,6 @@
 #include <time.h>
 #include <unistd.h>
 
-static const char *kExpectBin =
-    "/Users/noah/Library/Application Support/Steam/steamapps/common/"
-    "Baldurs Gate 3/Baldur's Gate 3.app/Contents/MacOS/Baldur's Gate 3";
-
 // 安装根目录：BG3MF_HOME 优先，默认 ~/Library/Application Support/BG3MetalFX。
 static void bg3mf_home(char *out, size_t n) {
     const char *h = getenv("BG3MF_HOME");
@@ -56,9 +52,13 @@ static int fail(const char *reason) {
 int main(int argc, char *argv[]) {
     if (argc < 2) return fail("no target from steam");
 
-    char home[PATH_MAX], dylib[PATH_MAX * 2];
-    bg3mf_home(home, sizeof(home));
-    snprintf(dylib, sizeof(dylib), "%s/libbg3mf_probe.dylib", home);
+    // dylib 与包装器自身同目录（pkg 安装与开发 build 目录均满足）。
+    char self[PATH_MAX], dylib[PATH_MAX * 2], selfdir[PATH_MAX];
+    if (!realpath(argv[0], self)) return fail("realpath self failed");
+    snprintf(selfdir, sizeof(selfdir), "%s", self);
+    char *slash = strrchr(selfdir, '/');
+    if (slash) *slash = '\0';
+    snprintf(dylib, sizeof(dylib), "%s/libbg3mf_probe.dylib", selfdir);
 
     struct stat st;
     if (stat(dylib, &st) != 0) return fail("dylib missing");
@@ -107,11 +107,30 @@ int main(int argc, char *argv[]) {
     }
     setenv("DYLD_INSERT_LIBRARIES", inject, 1);
 
-    // 4b. 可选调试环境文件：runs/launch_env，每行 KEY=VALUE（排障开关用）。
+    // 4b. 可选调试环境文件 launch_env，每行 KEY=VALUE（排障开关用）。
+    // 查找顺序：$BG3MF_HOME/runs → <包装器目录>/../runs（开发布局）→ 默认 home。
     {
         char env_file[PATH_MAX * 2];
-        snprintf(env_file, sizeof(env_file), "%s/runs/launch_env", home);
-        FILE *ef = fopen(env_file, "r");
+        FILE *ef = NULL;
+        const char *hh = getenv("BG3MF_HOME");
+        if (hh && hh[0]) {
+            snprintf(env_file, sizeof(env_file), "%s/runs/launch_env", hh);
+            ef = fopen(env_file, "r");
+        }
+        if (!ef) {
+            snprintf(env_file, sizeof(env_file), "%s/runs/launch_env", selfdir);
+            ef = fopen(env_file, "r");
+        }
+        if (!ef) {
+            snprintf(env_file, sizeof(env_file), "%s/../runs/launch_env", selfdir);
+            ef = fopen(env_file, "r");
+        }
+        if (!ef) {
+            char home[PATH_MAX];
+            bg3mf_home(home, sizeof(home));
+            snprintf(env_file, sizeof(env_file), "%s/runs/launch_env", home);
+            ef = fopen(env_file, "r");
+        }
         if (ef) {
             char line[512];
             while (fgets(line, sizeof(line), ef)) {

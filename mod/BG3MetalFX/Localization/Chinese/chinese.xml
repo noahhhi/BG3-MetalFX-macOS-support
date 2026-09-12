@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <contentList>
-    <content contentuid="h99eaeb3ag3d0fg4815g8a0cgc81b319b1926" version="1">MetalFX</content>
-    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="1">Apple MetalFX 时域超分是平台优化的超分辨率技术。
+    <content contentuid="h99eaeb3ag3d0fg4815g8a0cgc81b319b1926" version="2">MetalFX</content>
+    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="2">Apple MetalFX 时域超分是平台优化的超分辨率技术。
 
 它结合抖动渲染与跨多帧的时域累积，从较低分辨率的渲染中重建出接近原生品质的图像，在保持画质的同时提升性能。</content>
 </contentList>

@@ -2,3 +2,7 @@ build/
 dist/
 *.pkg
 .DS_Store
+
+.validation/
+
+.pkg-build.*/

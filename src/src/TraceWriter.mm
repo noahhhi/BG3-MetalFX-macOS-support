@@ -37,6 +37,7 @@ void bg3mf_trace_init(const char *path) {
 
 // obj 须为可 JSON 序列化对象；失败时丢弃该行。
 void bg3mf_trace_event(NSDictionary *obj) {
+    if (!g_trace_handle) return;
     if (atomic_fetch_add(&g_trace_lines, 1) >= kMaxLines) return;
     @autoreleasepool {
         NSData *data = [NSJSONSerialization dataWithJSONObject:obj

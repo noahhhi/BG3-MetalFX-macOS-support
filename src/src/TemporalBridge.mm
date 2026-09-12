@@ -1,334 +1,189 @@
-// 阶段 E：TemporalBridge——用 MTLFXTemporalScaler 替换游戏 TAA。
-//
-// 接入点（由 MetalObserver 在对应 hook 处调用）：
-// 1. 主视口 LinearizeDepth draw → bg3mf_tb_note_depth_source 缓存原始 device depth。
-// 2. PPTAA_PS 的 draw → bg3mf_tb_try_record_taa 记录输入（颜色/速度/输出/jitter），
-//    返回非 0 时调用方跳过原始 draw（抑制游戏 TAA）。
-// 3. render encoder endEncoding(orig 之后) → bg3mf_tb_encode_if_pending：
-//    深度转换（Depth32F_Stencil8 → R32Float）+ scaler encode 进游戏 command buffer。
-//
-// 运行时验证过的契约（见 HANDOFF 增补 5）：
-// - 速度 = current-minus-previous 像素位移 → motionVectorScale=(-1,-1)
-// - 深度 reversed-Z（远=0）→ depthReversed=YES；LinearizeDepth 输入为 Depth32F_Stencil8
-// - 颜色 RG11B10Float 线性 HDR → preExposure=1.0
-// - jitter 在 TemporalConstants(f:8) +0xd0，像素单位
-//
-// 环境开关：BG3MF_TEMPORAL=1 启用（默认关闭，观测器纯被动）。
+// MetalFX runs immediately after PPTAA's render encoder, using raw current HDR.
+// EASU then copies/compresses the upscaled HDR inside the game's compute encoder.
+// Stock RCAS (including inverse compression) and subsequent consumers keep their order.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
-#include <stdatomic.h>
-#include <string.h>
+#include <atomic>
+#include <cmath>
 
-void bg3mf_observer_log(const char *msg);  // LoadProbe 提供
+void bg3mf_observer_log(const char *);
+extern void bg3mf_dump_easu_textures(id, id, id);
+static BOOL checked, enabled;
+static id<MTLTexture> depthSource, velocity, pendingColor, pendingMotion, pendingOutput;
+static id<MTLTexture> depthR32, scaledHDR;
+static id<MTLComputePipelineState> depthPipeline, compressPipeline;
+static id<MTLDevice> device;
+static id<MTLFXTemporalScaler> scaler;
+static NSUInteger iw, ih, ow, oh, fsrOW, fsrOH, readyIW, readyIH;
+static MTLPixelFormat colorFormat, motionFormat, outputFormat;
+static float jitterX, jitterY;
+static BOOL ready;
+static std::atomic<bool> needReset{true};
+static long frames;
 
-static BOOL g_tb_enabled;
-static BOOL g_tb_checked;
-static BOOL g_fsrMode;                 // 检测到 compute:FSR pipeline → EASU 接管模式
-
-// 每帧记录（游戏单渲染线程，按帧顺序到达）
-static id<MTLTexture> g_depthSrc;      // 主视口 LinearizeDepth 的输入（device depth）
-static id<MTLTexture> g_velocity;      // VelocityBufferCamera pass 输出（内部 res）
-static id<MTLTexture> g_pendColor;
-static id<MTLTexture> g_pendMotion;
-static id<MTLTexture> g_pendOutput;
-static float g_pendJitterX, g_pendJitterY;
-
-// EASU 接管（FSR 模式）：input=低 res HDR，output=原生 res
-static id<MTLTexture> g_easuIn;
-static id<MTLTexture> g_easuOut;
-
-// MetalFX 资源（按分辨率缓存）
-static id<MTLDevice> g_dev;
-static id<MTLFXTemporalScaler> g_scaler;
-static NSUInteger g_scalerW, g_scalerH, g_scalerOW, g_scalerOH;
-static BOOL g_needReset = YES;
-static id<MTLTexture> g_depthR32;
-static id<MTLComputePipelineState> g_depthCvt;
-static _Atomic long g_tbFrames = 0;
-
-static const char *kCvtSrc =
-    "#include <metal_stdlib>\n"
-    "using namespace metal;\n"
-    "kernel void cvt_depth(texture2d<float, access::read> src [[texture(0)]],\n"
-    "                      texture2d<float, access::write> dst [[texture(1)]],\n"
-    "                      uint2 gid [[thread_position_in_grid]]) {\n"
-    "  if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;\n"
-    "  dst.write(float4(src.read(gid).x, 0.0, 0.0, 0.0), gid);\n"
-    "}\n";
+static NSString *const kernels = @R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+kernel void bg3mf_depth(texture2d<float, access::read> src [[texture(0)]],
+                         texture2d<float, access::write> dst [[texture(1)]],
+                         uint2 p [[thread_position_in_grid]]) {
+    if (p.x < dst.get_width() && p.y < dst.get_height()) dst.write(src.read(p).x, p);
+}
+kernel void bg3mf_compress(texture2d<float, access::read> src [[texture(0)]],
+                            texture2d<float, access::write> dst [[texture(1)]],
+                            uint2 p [[thread_position_in_grid]]) {
+    if (p.x >= dst.get_width() || p.y >= dst.get_height()) return;
+    float3 c = max(src.read(p).rgb, 0.0f);
+    dst.write(float4(c / (1.0f + max(c.r, max(c.g, c.b))), 1.0f), p);
+}
+)METAL";
 
 int bg3mf_tb_is_enabled(void) {
-    if (!g_tb_checked) {
-        const char *e = getenv("BG3MF_TEMPORAL");
-        g_tb_enabled = e && strcmp(e, "1") == 0;
-        g_tb_checked = YES;
-        if (g_tb_enabled) bg3mf_observer_log("tb: temporal bridge ENABLED");
+    if (!checked) {
+        const char *v = getenv("BG3MF_TEMPORAL");
+        enabled = v && strcmp(v, "1") == 0;
+        checked = YES;
+        if (enabled) bg3mf_observer_log("tb: temporal bridge ENABLED (raw HDR -> MetalFX -> FSR compress -> stock RCAS)");
     }
-    return g_tb_enabled;
+    return enabled;
 }
-
 void bg3mf_tb_note_depth_source(const void *tex) {
-    if (!bg3mf_tb_is_enabled() || !tex) return;
-    g_depthSrc = (__bridge id<MTLTexture>)tex;
+    if (bg3mf_tb_is_enabled()) depthSource = (__bridge id<MTLTexture>)tex;
 }
-
 void bg3mf_tb_note_velocity(const void *tex) {
-    if (!bg3mf_tb_is_enabled() || !tex) return;
-    g_velocity = (__bridge id<MTLTexture>)tex;
+    if (!bg3mf_tb_is_enabled()) return;
+    velocity = (__bridge id<MTLTexture>)tex;
+    ready = NO;
 }
 
-void bg3mf_tb_note_fsr_pipeline(void) {
-    if (!bg3mf_tb_is_enabled() || g_fsrMode) return;
-    g_fsrMode = YES;
-    bg3mf_observer_log("tb: FSR pipeline detected -> EASU takeover mode");
+static id<MTLTexture> texture(MTLPixelFormat fmt, NSUInteger w, NSUInteger h, MTLTextureUsage usage) {
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:w height:h mipmapped:NO];
+    d.storageMode = MTLStorageModePrivate;
+    d.usage = usage;
+    return [device newTextureWithDescriptor:d];
+}
+static BOOL prepare(id<MTLTexture> c, id<MTLTexture> m, id<MTLTexture> o, NSUInteger w, NSUInteger h) {
+    if (device && device != c.device) {
+        scaler = nil; depthPipeline = nil; compressPipeline = nil; depthR32 = nil; scaledHDR = nil;
+    }
+    device = c.device;
+    if (![MTLFXTemporalScalerDescriptor supportsDevice:device]) return NO;
+    if (!depthPipeline) {
+        NSError *e = nil;
+        id<MTLLibrary> lib = [device newLibraryWithSource:kernels options:nil error:&e];
+        depthPipeline = [device newComputePipelineStateWithFunction:[lib newFunctionWithName:@"bg3mf_depth"] error:&e];
+        compressPipeline = [device newComputePipelineStateWithFunction:[lib newFunctionWithName:@"bg3mf_compress"] error:&e];
+        if (!depthPipeline || !compressPipeline) { bg3mf_observer_log("tb: bridge kernels unavailable; using stock rendering"); return NO; }
+    }
+    if (!scaler || iw != c.width || ih != c.height || ow != w || oh != h ||
+        colorFormat != c.pixelFormat || motionFormat != m.pixelFormat || outputFormat != o.pixelFormat) {
+        MTLFXTemporalScalerDescriptor *d = [MTLFXTemporalScalerDescriptor new];
+        d.inputWidth = c.width; d.inputHeight = c.height; d.outputWidth = w; d.outputHeight = h;
+        d.colorTextureFormat = c.pixelFormat; d.motionTextureFormat = m.pixelFormat;
+        d.depthTextureFormat = MTLPixelFormatR32Float; d.outputTextureFormat = o.pixelFormat;
+        id<MTLFXTemporalScaler> s = [d newTemporalScalerWithDevice:device];
+        if (!s) { bg3mf_observer_log("tb: scaler unavailable; using stock rendering"); return NO; }
+        scaler = s; iw = c.width; ih = c.height; ow = w; oh = h;
+        colorFormat = c.pixelFormat; motionFormat = m.pixelFormat; outputFormat = o.pixelFormat;
+        depthR32 = texture(MTLPixelFormatR32Float, iw, ih, scaler.depthTextureUsage | MTLTextureUsageShaderWrite);
+        scaledHDR = texture(outputFormat, ow, oh, scaler.outputTextureUsage | MTLTextureUsageShaderRead);
+        needReset = true;
+        char msg[200]; snprintf(msg, sizeof(msg), "tb: scaler %lux%lu->%lux%lu formats=%lu/%lu/%lu", iw,ih,ow,oh,colorFormat,motionFormat,outputFormat);
+        bg3mf_observer_log(msg);
+    }
+    return depthR32 && scaledHDR &&
+        (c.usage & scaler.colorTextureUsage) == scaler.colorTextureUsage &&
+        (m.usage & scaler.motionTextureUsage) == scaler.motionTextureUsage;
 }
 
-// 返回非 0 = 已记录并可抑制原始 TAA draw。
-int bg3mf_tb_try_record_taa(const void *color, const void *motion, const void *output,
-                            const void *constBuf, unsigned long bufOff) {
-    if (!bg3mf_tb_is_enabled()) return 0;
-    if (g_fsrMode) return 0;  // FSR 模式走 EASU 接管，不抑制 TAA
-    if (!color || !motion || !output || !g_depthSrc) return 0;
+// Returns 1 only for a native-resolution replacement. The low-resolution stock TAA
+// is left valid for unrelated consumers, but its filtered color never enters MetalFX.
+// *scheduled tells the observer to encode MetalFX even when the stock draw is retained.
+int bg3mf_tb_record_taa(const void *color, const void *motion, const void *output,
+                        const void *buffer, unsigned long offset, int *scheduled) {
+    *scheduled = 0;
+    if (!bg3mf_tb_is_enabled() || !color || !motion || !output || !depthSource) return 0;
     id<MTLTexture> c = (__bridge id<MTLTexture>)color;
     id<MTLTexture> m = (__bridge id<MTLTexture>)motion;
     id<MTLTexture> o = (__bridge id<MTLTexture>)output;
-    // 输入必须同尺寸（1:1 阶段）；输出必须能 shaderWrite。
-    if (c.width != m.width || c.height != m.height) return 0;
-    if (!(o.usage & MTLTextureUsageShaderWrite)) return 0;
-
-    float jx = 0.0f, jy = 0.0f;
-    if (constBuf) {
-        id<MTLBuffer> b = (__bridge id<MTLBuffer>)constBuf;
-        if (b.storageMode != MTLStorageModePrivate &&
-            b.length >= bufOff + 0xd0 + 8) {
-            const float *j =
-                (const float *)((const char *)b.contents + bufOff + 0xd0);
-            jx = j[0];
-            jy = j[1];
-        }
-    }
-    g_pendColor = c;
-    g_pendMotion = m;
-    g_pendOutput = o;
-    g_pendJitterX = jx;
-    g_pendJitterY = jy;
-    return 1;
-}
-
-// 返回非 0 = 已记录并可抑制 EASU dispatch。
-int bg3mf_tb_try_record_easu(const void *input, const void *output,
-                             const void *constBuf, unsigned long bufOff) {
-    if (!bg3mf_tb_is_enabled() || !g_fsrMode) return 0;
-    if (!input || !output || !g_velocity || !g_depthSrc) return 0;
-    id<MTLTexture> in = (__bridge id<MTLTexture>)input;
-    id<MTLTexture> out = (__bridge id<MTLTexture>)output;
-    // 速度/深度必须与 EASU 输入同尺寸（同为内部渲染 res）；输出必须可写。
-    if (g_velocity.width != in.width || g_velocity.height != in.height) return 0;
-    if (g_depthSrc.width != in.width || g_depthSrc.height != in.height) return 0;
-    if (!(out.usage & MTLTextureUsageShaderWrite)) return 0;
-
-    float jx = 0.0f, jy = 0.0f;
-    if (constBuf) {
-        id<MTLBuffer> b = (__bridge id<MTLBuffer>)constBuf;
-        if (b.storageMode != MTLStorageModePrivate &&
-            b.length >= bufOff + 0xd0 + 8) {
-            const float *j =
-                (const float *)((const char *)b.contents + bufOff + 0xd0);
-            jx = j[0];
-            jy = j[1];
-        }
-    }
-    g_easuIn = in;
-    g_easuOut = out;
-    g_pendJitterX = jx;
-    g_pendJitterY = jy;
-    return 1;
-}
-
-static BOOL tb_ensure_scaler(NSUInteger w, NSUInteger h, NSUInteger ow,
-                             NSUInteger oh, MTLPixelFormat cfmt,
-                             MTLPixelFormat mfmt, MTLPixelFormat ofmt) {
-    if (g_scaler && g_scalerW == w && g_scalerH == h &&
-        g_scalerOW == ow && g_scalerOH == oh)
-        return YES;
-    MTLFXTemporalScalerDescriptor *d = [MTLFXTemporalScalerDescriptor new];
-    d.colorTextureFormat = cfmt;
-    d.depthTextureFormat = MTLPixelFormatR32Float;
-    d.motionTextureFormat = mfmt;
-    d.outputTextureFormat = ofmt;
-    d.inputWidth = w;
-    d.inputHeight = h;
-    d.outputWidth = ow;
-    d.outputHeight = oh;
-    if (![MTLFXTemporalScalerDescriptor supportsDevice:g_dev]) {
-        bg3mf_observer_log("tb: device not supported");
-        return NO;
-    }
-    g_scaler = [d newTemporalScalerWithDevice:g_dev];
-    if (!g_scaler) {
-        bg3mf_observer_log("tb: scaler create failed");
-        return NO;
-    }
-    g_scalerW = w;
-    g_scalerH = h;
-    g_scalerOW = ow;
-    g_scalerOH = oh;
-    g_needReset = YES;
-    bg3mf_observer_log("tb: scaler created");
-    return YES;
-}
-
-static BOOL tb_ensure_depth_cvt(NSUInteger w, NSUInteger h) {
-    if (!g_depthCvt) {
-        NSError *err = nil;
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(kCvtSrc)
-                                                 options:nil
-                                                   error:&err];
-        if (!lib) {
-            bg3mf_observer_log("tb: cvt shader compile failed");
-            return NO;
-        }
-        g_depthCvt = [g_dev newComputePipelineStateWithFunction:
-                             [lib newFunctionWithName:@"cvt_depth"]
-                                                          error:&err];
-        if (!g_depthCvt) {
-            bg3mf_observer_log("tb: cvt pipeline failed");
-            return NO;
-        }
-    }
-    if (!g_depthR32 || g_depthR32.width != w || g_depthR32.height != h) {
-        MTLTextureDescriptor *td =
-            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
-                                                               width:w
-                                                              height:h
-                                                           mipmapped:NO];
-        td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-        g_depthR32 = [g_dev newTextureWithDescriptor:td];
-        if (!g_depthR32) {
-            bg3mf_observer_log("tb: depthR32 alloc failed");
-            return NO;
-        }
-    }
-    return YES;
-}
-
-void bg3mf_tb_encode_easu_if_pending(const void *cbPtr) {
-    if (!g_easuIn) return;
-    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbPtr;
+    if (c.width != m.width || c.height != m.height || c.width != depthSource.width || c.height != depthSource.height) return 0;
+    NSUInteger w = c.width, h = c.height;
+    // Learn the game's actual output size at EASU, no screen/native-size assumption.
+    // A first FSR frame or resize uses the intact stock FSR chain until sizes match.
+    BOOL upscale = fsrOW > c.width && fsrOH > c.height;
+    if (upscale) { w = fsrOW; h = fsrOH; }
     @try {
-        id<MTLTexture> input = g_easuIn, output = g_easuOut;
-        g_easuIn = nil;
-        g_easuOut = nil;
-        g_dev = input.device;
-        NSUInteger w = input.width, h = input.height;
-        if (!tb_ensure_scaler(w, h, output.width, output.height,
-                              input.pixelFormat, g_velocity.pixelFormat,
-                              output.pixelFormat) ||
-            !tb_ensure_depth_cvt(w, h))
-            return;
-
-        // 1. 深度转换：Depth32F_Stencil8 → R32Float（内部 res 尺寸）。
-        id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
-        [ce setComputePipelineState:g_depthCvt];
-        [ce setTexture:g_depthSrc atIndex:0];
-        [ce setTexture:g_depthR32 atIndex:1];
-        MTLSize tg = MTLSizeMake(16, 16, 1);
-        MTLSize grid = MTLSizeMake((w + 15) / 16, (h + 15) / 16, 1);
-        [ce dispatchThreadgroups:grid threadsPerThreadgroup:tg];
-        [ce endEncoding];
-
-        // 2. MetalFX Temporal：低 res → 原生 res。
-        g_scaler.colorTexture = input;
-        g_scaler.depthTexture = g_depthR32;
-        g_scaler.motionTexture = g_velocity;
-        g_scaler.outputTexture = output;
-        g_scaler.inputContentWidth = w;
-        g_scaler.inputContentHeight = h;
-        g_scaler.jitterOffsetX = g_pendJitterX;
-        g_scaler.jitterOffsetY = g_pendJitterY;
-        g_scaler.motionVectorScaleX = -1.0f;
-        g_scaler.motionVectorScaleY = -1.0f;
-        g_scaler.preExposure = 1.0f;
-        g_scaler.depthReversed = YES;
-        g_scaler.reset = g_needReset;
-        [g_scaler encodeToCommandBuffer:cb];
-        g_needReset = NO;
-
-        long n = atomic_fetch_add(&g_tbFrames, 1);
-        if (n < 5 || n % 300 == 0) {
-            char msg[192];
-            snprintf(msg, sizeof(msg),
-                     "tb: easu frame %ld %lux%lu->%lux%lu jitter=(%.4f,%.4f)",
-                     n, (unsigned long)w, (unsigned long)h,
-                     (unsigned long)output.width, (unsigned long)output.height,
-                     g_pendJitterX, g_pendJitterY);
-            bg3mf_observer_log(msg);
+        if (!prepare(c,m,o,w,h)) return 0;
+        jitterX = jitterY = 0;
+        if (buffer) {
+            id<MTLBuffer> b = (__bridge id<MTLBuffer>)buffer;
+            if (b.storageMode != MTLStorageModePrivate && offset <= b.length && b.length-offset >= 0xd8) {
+                const float *j = (const float *)((const char *)b.contents+offset+0xd0);
+                if (std::isfinite(j[0]) && std::isfinite(j[1])) { jitterX=j[0]; jitterY=j[1]; }
+            }
         }
+        pendingColor=c; pendingMotion=m; pendingOutput=upscale ? nil : o;
+        *scheduled=1;
+        return upscale ? 0 : 1;
     } @catch (NSException *e) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "tb: easu encode exception: %s",
-                 e.reason.UTF8String);
-        bg3mf_observer_log(msg);
+        bg3mf_observer_log("tb: preparation failed; using stock rendering"); return 0;
     }
 }
 
 void bg3mf_tb_encode_if_pending(const void *cbPtr) {
-    if (!g_pendColor) return;
+    if (!pendingColor || !cbPtr) return;
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbPtr;
+    id<MTLTexture> c=pendingColor, m=pendingMotion, o=pendingOutput;
+    pendingColor=nil; pendingMotion=nil; pendingOutput=nil;
     @try {
-        id<MTLTexture> color = g_pendColor, motion = g_pendMotion, output = g_pendOutput;
-        g_pendColor = nil;
-        g_pendMotion = nil;
-        g_pendOutput = nil;
-        g_dev = color.device;
-        NSUInteger w = color.width, h = color.height;
-        if (!tb_ensure_scaler(w, h, output.width, output.height,
-                              color.pixelFormat, motion.pixelFormat,
-                              output.pixelFormat) ||
-            !tb_ensure_depth_cvt(w, h))
-            return;
-
-        // 1. 深度转换：Depth32F_Stencil8 → R32Float（同 cb，compute 紧接在已结束的
-        //    render encoder 之后是合法的）。
-        id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
-        [ce setComputePipelineState:g_depthCvt];
-        [ce setTexture:g_depthSrc atIndex:0];
-        [ce setTexture:g_depthR32 atIndex:1];
-        MTLSize tg = MTLSizeMake(16, 16, 1);
-        MTLSize grid =
-            MTLSizeMake((w + 15) / 16, (h + 15) / 16, 1);
-        [ce dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        id<MTLComputeCommandEncoder> ce=[cb computeCommandEncoder];
+        [ce setComputePipelineState:depthPipeline]; [ce setTexture:depthSource atIndex:0]; [ce setTexture:depthR32 atIndex:1];
+        [ce dispatchThreadgroups:MTLSizeMake((iw+15)/16,(ih+15)/16,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];
         [ce endEncoding];
-
-        // 2. MetalFX Temporal
-        g_scaler.colorTexture = color;
-        g_scaler.depthTexture = g_depthR32;
-        g_scaler.motionTexture = motion;
-        g_scaler.outputTexture = output;
-        g_scaler.inputContentWidth = w;
-        g_scaler.inputContentHeight = h;
-        g_scaler.jitterOffsetX = g_pendJitterX;
-        g_scaler.jitterOffsetY = g_pendJitterY;
-        g_scaler.motionVectorScaleX = -1.0f;
-        g_scaler.motionVectorScaleY = -1.0f;
-        g_scaler.preExposure = 1.0f;
-        g_scaler.depthReversed = YES;
-        g_scaler.reset = g_needReset;
-        [g_scaler encodeToCommandBuffer:cb];
-        g_needReset = NO;
-
-        long n = atomic_fetch_add(&g_tbFrames, 1);
-        if (n < 5 || n % 300 == 0) {
-            char msg[160];
-            snprintf(msg, sizeof(msg),
-                     "tb: encoded frame %ld jitter=(%.4f,%.4f)", n,
-                     g_pendJitterX, g_pendJitterY);
+        scaler.colorTexture=c; scaler.motionTexture=m; scaler.depthTexture=depthR32; scaler.outputTexture=scaledHDR;
+        scaler.inputContentWidth=iw; scaler.inputContentHeight=ih;
+        scaler.jitterOffsetX=jitterX; scaler.jitterOffsetY=jitterY;
+        scaler.motionVectorScaleX=-1; scaler.motionVectorScaleY=-1;
+        scaler.depthReversed=YES; scaler.preExposure=1; scaler.reset=needReset.exchange(false);
+        [scaler encodeToCommandBuffer:cb];
+        if (o) {
+            id<MTLBlitCommandEncoder> b=[cb blitCommandEncoder];
+            [b copyFromTexture:scaledHDR sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+                    sourceSize:MTLSizeMake(ow,oh,1) toTexture:o destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+            [b endEncoding];
+        }
+        ready=YES; readyIW=iw; readyIH=ih;
+        bg3mf_dump_easu_textures(c,scaledHDR,cb);
+        long n=frames++;
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+            if (done.status == MTLCommandBufferStatusError) {
+                needReset=true;
+                bg3mf_observer_log(done.error.localizedDescription.UTF8String);
+            } else if (n < 3 || n % 300 == 0) {
+                char msg[200]; snprintf(msg,sizeof(msg),"tb: GPU completed frame %ld duration_ms=%.3f",n,(done.GPUEndTime-done.GPUStartTime)*1000);
+                bg3mf_observer_log(msg);
+            }
+        }];
+        if (n < 3 || n % 300 == 0) {
+            char msg[200]; snprintf(msg,sizeof(msg),"tb: raw HDR frame %ld %lux%lu->%lux%lu jitter=(%.4f,%.4f)",n,iw,ih,ow,oh,jitterX,jitterY);
             bg3mf_observer_log(msg);
         }
-    } @catch (NSException *e) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "tb: encode exception: %s",
-                 e.reason.UTF8String);
-        bg3mf_observer_log(msg);
-    }
+    } @catch (NSException *e) { ready=NO; needReset=true; bg3mf_observer_log(e.reason.UTF8String); }
+}
+
+// Runs IN the existing compute encoder, before RCAS and any later dispatches.
+// The observer restores the game's pipeline and bindings after this replacement.
+int bg3mf_tb_replace_easu(const void *encPtr, const void *input, const void *output) {
+    if (!bg3mf_tb_is_enabled() || !encPtr || !input || !output) return 0;
+    id<MTLTexture> in=(__bridge id<MTLTexture>)input, out=(__bridge id<MTLTexture>)output;
+    if (out.width <= in.width || out.height <= in.height) return 0;
+    fsrOW=out.width; fsrOH=out.height;
+    if (!ready || !compressPipeline || readyIW != in.width || readyIH != in.height || scaledHDR.width != out.width || scaledHDR.height != out.height || !(out.usage & MTLTextureUsageShaderWrite)) return 0;
+    ready=NO;
+    id<MTLComputeCommandEncoder> ce=(__bridge id<MTLComputeCommandEncoder>)encPtr;
+    [ce setComputePipelineState:compressPipeline];
+    [ce setTexture:scaledHDR atIndex:0]; [ce setTexture:out atIndex:1];
+    [ce dispatchThreadgroups:MTLSizeMake((out.width+15)/16,(out.height+15)/16,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];
+    return 1;
 }

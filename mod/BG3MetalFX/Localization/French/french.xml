@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <contentList>
-    <content contentuid="h99eaeb3ag3d0fg4815g8a0cgc81b319b1926" version="1">MetalFX</content>
-    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="1">Apple MetalFX Temporal Upscaling est une technologie de mise à l'échelle optimisée pour la plateforme.
+    <content contentuid="h99eaeb3ag3d0fg4815g8a0cgc81b319b1926" version="2">MetalFX</content>
+    <content contentuid="h2c81e800gd63eg4d54g9089g381d0e5d7940" version="2">Apple MetalFX Temporal Upscaling est une technologie de mise à l'échelle optimisée pour la plateforme.
 
 En combinant le rendu avec gigue et l'accumulation temporelle sur plusieurs images, elle reconstruit une qualité d'image proche du natif à partir d'un rendu à résolution réduite, améliorant les performances sans compromettre la fidélité visuelle.</content>
 </contentList>

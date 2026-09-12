@@ -5,79 +5,104 @@
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-Native [MetalFX Temporal](https://developer.apple.com/metal/MetalFX/) upscaling for the macOS Steam release of *Baldur's Gate 3* (AppID 1086940), added to the game's own video options. The built-in AMD FSR 1.0 upscaler on macOS is a spatial (single-frame) upscaler; this package replaces it with Apple's temporal upscaler, which reconstructs near-native image quality from a lower-resolution render by accumulating information across multiple frames.
+Native [MetalFX Temporal](https://developer.apple.com/documentation/metalfx) upscaling for the macOS Steam release of *Baldur's Gate 3* (AppID 1086940). It replaces the FSR 1.0 spatial upscale with Apple's temporal reconstruction, using the game's current HDR color, motion vectors, depth and camera jitter.
 
-The upscaler appears in-game as **Options → Video → Upscaling Type → MetalFX**, with the label and description localized for every language the game ships (all 15). No game files are modified; everything is done through a Steam launch option and a standard BG3 localization mod.
+Select **Options → Video → Upscaling Type → MetalFX**, and keep **Anti-Aliasing → TAA** enabled. The name and description are supplied by a localization mod with all 15 game languages. The injection uses a Steam launch option; it does not modify the game bundle or saves.
 
-Reference test: Apple Silicon Mac (M4 Pro) running macOS 27, Steam release of Baldur's Gate 3 (patch 8, v4.1.1.7398727). Main-menu and in-game rendering, camera motion, and save compatibility are covered by local testing.
+Current reference test: Apple M4 Pro, macOS 27, native arm64 Steam build **4.1.1.7398727**. Real save loading and 3D rendering were checked at Ultra Quality and Performance; all four internal render sizes were observed live. See [validation details](docs/VALIDATION.md) for coverage and limits.
+
+<p align="center">
+  <img src="docs/images/settings-metalfx-zh.png" alt="BG3 video settings showing MetalFX and its Chinese description" width="900">
+  <br>
+  <em>MetalFX in the game's own video settings, with the localized description.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/ingame-metalfx-performance.png" alt="A real BG3 save rendered using MetalFX Temporal Performance mode" width="900">
+  <br>
+  <em>Performance mode in a real save: 1175 × 759 reconstructed to 3456 × 2234.</em>
+</p>
 
 > **Note:** The installer contains fixes only. You must own Baldur's Gate 3 on Steam; this repository does not include or distribute the game.
 
-## Render scale per mode
-
-When MetalFX is selected, each Upscaling Mode renders internally at the following scale of your display resolution (one tier lower than the corresponding FSR 1.0 mode, per Apple's temporal-scaling characteristics):
-
-| 升频模式 / Upscaling Mode | Render scale | Upscale factor |
-|---|---|---|
-| 极高品质 / Ultra Quality | 67% | 1.5x |
-| 品质 / Quality | 59% | 1.7x |
-| 平衡 / Balanced | 50% | 2.0x |
-| 性能 / Performance | 34% | 2.94x |
-
-With Upscaling Type set to **Off**, MetalFX Temporal still replaces the game's TAA at native resolution for higher-quality anti-aliasing.
-
 ## Requirements
 
-- macOS 13 or later on Apple Silicon (arm64)
-- Baldur's Gate 3 installed via Steam
+- Apple Silicon Mac (arm64), macOS 13 or later, with MetalFX Temporal support. Only the reference machine above has been tested.
+- The native macOS Steam release of Baldur's Gate 3, build 4.1.1.7398727.
+- Launch the game at least once to create its Steam and player profiles, then quit **both the game and Steam** before installing or uninstalling.
+- Leave anti-aliasing set to **TAA**: the mod uses that render stage and its jitter. SMAA and Off do not activate this temporal path.
 
 ## One-click install
 
-Download `BG3-MetalFX-arm64.pkg` from [GitHub Releases](https://github.com/noahhhi/BG3-MetalFX-macOS-support/releases) and double-click it. The package installs the injector and Steam wrapper into `~/Library/Application Support/BG3MetalFX`, installs the localization mod into the game's `Mods` folder, registers it in `modsettings.lsx`, and sets the Steam launch option. If Steam was running, restart it, then launch the game from Steam as usual and pick **MetalFX** under Options → Video → Upscaling Type.
+Download **`BG3-MetalFX-arm64.pkg`** from [GitHub Releases](https://github.com/noahhhi/BG3-MetalFX-macOS-support/releases/latest) and double-click it. The installer places the injector, launcher and uninstaller in `~/Library/Application Support/BG3MetalFX/`, installs `BG3MetalFX.pak` in the user Mods directory, registers the mod in existing player profiles, and updates only BG3's Steam launch option.
 
-A portable fallback is provided as `BG3-MetalFX-arm64.zip`: extract it and run `bash install.sh`.
+Start Steam again, launch the game as usual, and choose **MetalFX** with **TAA** enabled. When loading an existing save, the game may ask you to enable the newly added BG3MetalFX mod. The localization mod contains no gameplay changes.
+
+The ZIP is a portable fallback: extract **`BG3-MetalFX-arm64.zip`**, then double-click **`Install BG3 MetalFX.command`** or run `bash install.sh` from the extracted folder. The same native installer handles both methods; users do not need Python, CMake or Xcode.
+
+The installer preserves existing launch arguments and other mods. Invalid configuration files stop installation before changes are applied. A recovery backup is kept in `~/Library/Application Support/BG3MetalFX-backup/`. Keep that backup private; it contains your original configuration.
 
 > [!IMPORTANT]
-> The PKG is currently unsigned because no Developer ID Installer identity is available. If Gatekeeper blocks it, right-click the package and choose **Open**, or allow it under **System Settings → Privacy & Security**. Do not disable Gatekeeper.
+> The PKG is unsigned; its binaries are ad-hoc signed. If macOS blocks installation, allow it under **System Settings → Privacy & Security**. You do not need to disable Gatekeeper or reduce system security.
 
-If the PKG reports that installation failed, run the following command in Terminal. It creates `BG3MF-install-log.txt` on your Desktop; attach that file when opening a [GitHub issue](https://github.com/noahhhi/BG3-MetalFX-macOS-support/issues).
+If the PKG reports an installation failure, this command creates `BG3MF-install-log.txt` on your Desktop. Review it before attaching it to a [GitHub issue](https://github.com/noahhhi/BG3-MetalFX-macOS-support/issues).
 
 ```sh
 /usr/bin/grep -iE 'BG3 MetalFX|bg3mf|postinstall|error' /var/log/install.log | /usr/bin/tail -n 200 > "$HOME/Desktop/BG3MF-install-log.txt"
 ```
 
+## Render scale per mode
+
+| Upscaling Mode | Render scale per axis | Upscale factor | Observed input at 3456 × 2234 |
+|---|---|---|---|
+| Ultra Quality | ~67% | 1.5× | 2304 × 1489 |
+| Quality | ~59% | 1.7× | 2032 × 1314 |
+| Balanced | 50% | 2.0× | 1728 × 1117 |
+| Performance | ~34% | 2.94× | 1175 × 759 |
+
+These are the mod's chosen ratios, one tier lower than BG3's stock FSR 1.0 ratios. Actual dimensions are rounded by the game. If a video-setting change does not rebuild the render targets, restart the game.
+
+With Upscaling Type set to **Off** and anti-aliasing set to **TAA**, the bridge supplies MetalFX temporal anti-aliasing at the current rendering resolution.
+
 ## How it works
 
-- A small Steam launch-option wrapper prepends `DYLD_INSERT_LIBRARIES` when the game starts, loading the injector (a ~200 KB dylib). Steam, the game binary, and saves are untouched.
-- The injector observes the game's Metal command stream. When the FSR 1.0 chain is active, the spatial EASU upscale dispatch is replaced by an `MTLFXTemporalScaler` encode using the game's own HDR color, per-pixel motion vectors, reversed-Z depth, and camera jitter, written into the same output texture; the stock RCAS sharpening pass still runs afterwards. When upscaling is off, the game's TAA draw is replaced the same way at native resolution.
-- The FSR 1.0 quality-ratio table is patched **in memory only** to the render scales listed above; no game data on disk is changed.
-- The "MetalFX" label and its Apple-style description come from a standard BG3 localization mod that overrides two existing strings in every shipped language.
+- A small Steam wrapper adds the injector through `DYLD_INSERT_LIBRARIES`, preserving Steam's own overlay injection and existing launch arguments.
+- At the TAA render stage, MetalFX reads the unfiltered current HDR color, motion vectors, device depth converted to R32Float, and jitter. The temporal scaler runs after that render encoder ends.
+- At EASU, a compute kernel compresses the reconstructed HDR color into the game's existing intermediate texture. This executes inside the original compute encoder, before the unchanged RCAS sharpening/inverse-compression pass and later consumers. The stock TAA may remain for other consumers, but its filtered output is not fed into MetalFX.
+- The FSR quality-ratio table is changed in process memory after checking its mapped address and original values. Nothing is patched on disk.
+- A standard LSPK v18 mod contains two XML string overrides for each of the 15 languages, following [Larian's localization format](https://docs.baldursgate3.game/index.php?title=Adding_Localisation).
 
 ## Uninstall
 
-Run `uninstall.sh` (also installed to `~/Library/Application Support/BG3MetalFX/`), or download the standalone Release asset:
+Quit the game and Steam, then run `uninstall.sh` from the ZIP or the standalone Release asset:
 
 ```sh
 bash ~/Downloads/uninstall.sh
 ```
 
-This removes the Steam launch option, the localization mod and its `modsettings.lsx` registration, and the injector directory. Save files are left untouched.
+It removes the injector and localization PAK, removes only BG3MetalFX's mod registrations, and restores the previous BG3 launch option when it still matches the installed value. Other games' launch options, other mods and later unrelated configuration changes are retained. If you edited BG3's launch option after installation, the uninstaller asks you to remove the wrapper first rather than overwriting your edits. Saves and the recovery backup are retained.
 
 ## Known limitations
 
-- The game must render at your display resolution (fullscreen or borderless at native size); changing the display resolution requires a game restart.
-- Camera cuts and scene transitions reuse MetalFX's built-in history reset heuristics; a one-frame softening may be visible.
-- BG3 treats any registered mod as a modded profile (standard mod warning; achievements behavior follows the game's own mod rules).
-- Frame generation is not included; this package provides temporal upscaling and anti-aliasing only.
+- v1.0.0 had a black-screen defect and a localization-loading defect. Use v1.0.1 or later.
+- This is an experimental hook for the specific native game build above. Other game builds, Intel/Rosetta, HDR output, split-screen, multiplayer and every possible scene/effect have not been validated.
+- TAA must remain enabled. The mod does not add frame generation or an achievement-enabling patch. BG3's usual mod/profile rules apply.
+- Temporal history resets on scaler size/format changes and GPU errors. There is no explicit game camera-cut/reset integration; transient trails or softening can occur around scene cuts or disocclusions.
+- The reference game was capped at 10 FPS by its existing settings. The validation demonstrates rendering and dimensions, **not an uncapped FPS improvement** or a general image-quality comparison. A [capped GPU-load comparison](docs/VALIDATION.md#gpu-load-with-the-existing-10-fps-cap) found lower active-time occupancy than native TAA, but did not establish lower GPU power or heat.
+- The Simplified Chinese interface was checked live; remaining translations are packaged and structurally checked, not individually tested in the game.
 
 ## Building from source
+
+On Apple Silicon with CMake, Python 3 and Apple's command-line build tools:
 
 ```sh
 cmake -S src -B src/build -DCMAKE_OSX_ARCHITECTURES=arm64
 cmake --build src/build
-scripts/build_pkg.sh   # assembles dist/BG3-MetalFX-arm64.pkg
+bash scripts/build_pkg.sh
 ```
+
+The build produces a PKG, a portable ZIP, `uninstall.sh` and `SHA256SUMS.txt` in `dist/`. Shader regression tests also require Apple's Metal compiler tools. See [validation details](docs/VALIDATION.md) for test commands.
 
 ## License and credits
 
-This project is released under the [MIT License](LICENSE). *Baldur's Gate 3* is a game by Larian Studios; MetalFX is provided by Apple. This is an unofficial compatibility tool and distributes no game assets.
+This project is released under the [MIT License](LICENSE). *Baldur's Gate 3* is a game by Larian Studios; MetalFX is provided by Apple. The localization package writer follows the format documented by [Norbyte's LSLib](https://github.com/Norbyte/lslib). This is an unofficial compatibility tool and distributes no game assets.

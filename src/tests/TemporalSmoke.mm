@@ -98,13 +98,6 @@ int main(void) {
         BOOL supported = [MTLFXTemporalScalerDescriptor supportsDevice:device];
         check("supportsDevice", supported);
         if (!supported) return 1;
-        if ([MTLFXTemporalScalerDescriptor
-                respondsToSelector:@selector(supportedInputContentMinScaleForDevice:)]) {
-            note("inputContentScale min=%.3f max=%.3f",
-                 [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:device],
-                 [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device]);
-        }
-
         NSError *err = nil;
         id<MTLLibrary> lib =
             [device newLibraryWithURL:[NSURL fileURLWithPath:@(SMOKE_METALLIB_PATH)]
@@ -267,20 +260,6 @@ int main(void) {
                                  s.maxAbs <= 1.5 && s.meanAbsErr < 0.15;
             }
             check(names[sc], !error && scenarioOk[sc]);
-        }
-
-        // 新 SDK 可选属性：在 descriptor 上探测可用性，不默认启用。
-        if ([desc respondsToSelector:@selector(isJitteredMotionVectorsEnabled)]) {
-            note("jitteredMotionVectors available, default=%d",
-                 (int)desc.jitteredMotionVectorsEnabled);
-        }
-        if ([desc respondsToSelector:@selector(isOutputResolutionMotionVectorsEnabled)]) {
-            note("outputResolutionMotionVectors available, default=%d",
-                 (int)desc.outputResolutionMotionVectorsEnabled);
-        }
-        if ([desc respondsToSelector:@selector(isReactiveMaskTextureEnabled)]) {
-            note("reactiveMask available, default=%d",
-                 (int)desc.reactiveMaskTextureEnabled);
         }
 
         printf("SMOKE_RESULT %s\n", g_failures == 0 ? "PASS" : "FAIL");

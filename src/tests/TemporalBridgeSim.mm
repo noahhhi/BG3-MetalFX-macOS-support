@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <cmath>
 
 #ifndef SMOKE_METALLIB_PATH
 #define SMOKE_METALLIB_PATH "smokeinputs.metallib"
@@ -36,6 +37,9 @@ int main(void) {
                              error:&err];
         if (!lib) { printf("no lib\n"); return 1; }
 
+        BOOL fsr = getenv("SIM_FSR") != NULL;
+        double scale = getenv("SIM_SCALE") ? atof(getenv("SIM_SCALE")) : 1.5;
+        NSUInteger outW = (NSUInteger)(W*scale), outH = (NSUInteger)(H*scale);
         // --- 资源：模拟游戏的 TAA 输入集 ---
         id<MTLTexture> color = mk_tex(dev, MTLPixelFormatRG11B10Float, W, H,
                                       MTLTextureUsageShaderRead |
@@ -100,6 +104,21 @@ int main(void) {
             [dev newRenderPipelineStateWithDescriptor:pd error:&err];
         if (!fillPSO) { printf("fill pso fail\n"); return 1; }
 
+        id<MTLComputePipelineState> easuPSO = nil, rcasPSO = nil, consumePSO = nil;
+        id<MTLTexture> easuOut = nil, fsrOut = nil, finalOut = nil;
+        if (fsr || getenv("SIM_CREATE_FSR_ONLY")) {
+            easuPSO = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"FSR"] error:&err];
+            rcasPSO = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"FSR_RCAS"] error:&err];
+            consumePSO = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"consume_fsr"] error:&err];
+            finalOut = mk_tex(dev, MTLPixelFormatRG11B10Float, outW, outH, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+            easuOut = mk_tex(dev, MTLPixelFormatRG11B10Float, outW, outH, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+            fsrOut = mk_tex(dev, MTLPixelFormatRG11B10Float, outW, outH, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+        }
+        // Known nonzero input: green, distinct from both original shader sentinels.
+        uint32_t green = (0x380u << 11);
+        NSMutableData *pixels = [NSMutableData dataWithLength:W*H*4];
+        for (unsigned i = 0; i < W*H; ++i) ((uint32_t*)pixels.mutableBytes)[i] = green;
+        [color replaceRegion:MTLRegionMake2D(0, 0, W, H) mipmapLevel:0 withBytes:pixels.bytes bytesPerRow:W*4];
         id<MTLCommandQueue> q = [dev newCommandQueue];
 
         for (int f = 0; f < 8; f++) {
@@ -123,6 +142,16 @@ int main(void) {
                     [re endEncoding];
                 }
 
+                // Initialize device depth on the GPU, never read undefined test input.
+                {
+                    MTLRenderPassDescriptor *dp = [MTLRenderPassDescriptor renderPassDescriptor];
+                    dp.depthAttachment.texture = depthDS;
+                    dp.depthAttachment.loadAction = MTLLoadActionClear;
+                    dp.depthAttachment.storeAction = MTLStoreActionStore;
+                    dp.depthAttachment.clearDepth = 0.5;
+                    id<MTLRenderCommandEncoder> de = [cb renderCommandEncoderWithDescriptor:dp];
+                    [de endEncoding];
+                }
                 // pass 1：LinearizeDepth（f:0 = 深度源）
                 {
                     MTLRenderPassDescriptor *rpd =
@@ -159,6 +188,24 @@ int main(void) {
                     [re endEncoding];
                 }
 
+                if (fsr) {
+                    id<MTLComputeCommandEncoder> ce = (f & 1)
+                        ? [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial]
+                        : [cb computeCommandEncoder];
+                    [ce setComputePipelineState:easuPSO];
+                    [ce setTexture:color atIndex:0];
+                    [ce setTexture:easuOut atIndex:1];
+                    [ce setBuffer:consts offset:0 atIndex:8];
+                    [ce dispatchThreads:MTLSizeMake(outW,outH,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];
+                    [ce setComputePipelineState:rcasPSO];
+                    [ce setTexture:easuOut atIndex:0];
+                    [ce setTexture:fsrOut atIndex:2];
+                    [ce dispatchThreadgroups:MTLSizeMake((outW+15)/16,(outH+15)/16,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];
+                    [ce setComputePipelineState:consumePSO];
+                    [ce setTexture:fsrOut atIndex:0]; [ce setTexture:finalOut atIndex:2];
+                    [ce dispatchThreads:MTLSizeMake(outW,outH,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)];
+                    [ce endEncoding];
+                }
                 [cb commit];
                 [cb waitUntilCompleted];
                 if (cb.status != MTLCommandBufferStatusCompleted) {
@@ -170,26 +217,27 @@ int main(void) {
         }
         usleep(500 * 1000);
 
-        // 读回 taaOut：若桥生效，内容≠PPTAA 常量 (0.25,0.5,0.75)
-        // RG11B10Float 读回 4B/px
-        NSUInteger rb = ((W * 4 + 255) / 256) * 256;
-        uint8_t *buf = (uint8_t *)malloc(rb * H);
-        [taaOut getBytes:buf bytesPerRow:rb fromRegion:MTLRegionMake2D(0, 0, W, H)
-                 mipmapLevel:0];
-        // 解码中心像素
-        uint32_t px = *(uint32_t *)(buf + (H / 2) * rb + (W / 2) * 4);
-        unsigned r11 = px & 0x7FF, g11 = (px >> 11) & 0x7FF, b10 = (px >> 22) & 0x3FF;
-        printf("center px raw r11=0x%x g11=0x%x b10=0x%x\n", r11, g11, b10);
-        // PPTAA 常量 (0.25,0.5,0.75) 的 fp11/fp11/fp10 编码：
-        // 0.25 → exp=13 → 13<<6 = 0x340；0.5 → exp=14 → 0x380；
-        // 0.75 → exp=14,m=16(fp10) → (14<<5)|16 = 0x1D0。
-        uint32_t pptaa = 0x340u | (0x380u << 11) | (0x1D0u << 22);
-        printf("pptaa const would be 0x%08x, got 0x%08x\n", pptaa, px);
-        if (px == pptaa) {
-            printf("BRIDGE_SIM_RESULT FAIL (output == PPTAA const, draw not suppressed)\n");
-            return 1;
+        id<MTLTexture> result = fsr ? finalOut : taaOut;
+        NSUInteger rb = ((result.width * 4 + 255) / 256) * 256;
+        id<MTLBuffer> readback = [dev newBufferWithLength:rb*result.height options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cb = [q commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromTexture:result sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+                  sourceSize:MTLSizeMake(result.width,result.height,1) toBuffer:readback destinationOffset:0
+                  destinationBytesPerRow:rb destinationBytesPerImage:rb*result.height];
+        [blit endEncoding]; [cb commit]; [cb waitUntilCompleted];
+        unsigned good = 0, total = 0;
+        for (NSUInteger y=result.height/4; y<result.height*3/4; y+=8) {
+            for (NSUInteger x=result.width/4; x<result.width*3/4; x+=8) {
+                uint32_t px = *(uint32_t*)((char*)readback.contents+y*rb+x*4);
+                unsigned r=px&2047, g=(px>>11)&2047, b=(px>>22)&1023;
+                good += (r < 0x100 && g >= 0x370 && g <= 0x390 && b < 0x80);
+                total++;
+            }
         }
-        printf("BRIDGE_SIM_RESULT PASS\n");
-        return 0;
+        printf("%s pixels matching green input: %u/%u\n", fsr ? "FSR" : "TAA", good, total);
+        BOOL pass = good == total && total > 0;
+        printf("BRIDGE_SIM_RESULT %s\n", pass ? "PASS" : "FAIL");
+        return pass ? 0 : 1;
     }
 }

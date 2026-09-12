@@ -30,15 +30,10 @@ void bg3mf_trace_event(NSDictionary *obj);
 extern void bg3mf_observer_log(const char *msg);
 int bg3mf_tb_is_enabled(void);
 void bg3mf_tb_note_depth_source(const void *tex);
-int bg3mf_tb_try_record_taa(const void *color, const void *motion,
-                            const void *output, const void *constBuf,
-                            unsigned long bufOff);
-void bg3mf_tb_encode_if_pending(const void *cb);
-void bg3mf_tb_note_velocity(const void *tex);
-void bg3mf_tb_note_fsr_pipeline(void);
-int bg3mf_tb_try_record_easu(const void *input, const void *output,
-                             const void *constBuf, unsigned long bufOff);
-void bg3mf_tb_encode_easu_if_pending(const void *cb);
+int bg3mf_tb_record_taa(const void *, const void *, const void *, const void *, unsigned long, int *);
+void bg3mf_tb_encode_if_pending(const void *);
+void bg3mf_tb_note_velocity(const void *);
+int bg3mf_tb_replace_easu(const void *, const void *, const void *);
 extern const char *bg3mf_self_path(void);         // LoadProbe 提供
 
 // ---------------------------------------------------------------------------
@@ -54,13 +49,14 @@ static NSMapTable *g_pipeline_info;   // strong -> strong
 static NSMapTable *g_enc_state;       // strong -> strong（endEncoding 时释放）
 
 static BOOL g_trace_all = NO;
+static BOOL g_trace_enabled = NO;
 static id<MTLDevice> g_device = nil;   // 安装时发现，用于抓取暂存纹理
 static long g_dump_cap = 0;             // BG3MF_DUMP_FRAMES 总帧数上限（安全闹）
 static _Atomic long g_dump_burst = 0;   // 哨兵触发的连发帧数
 static _Atomic long g_dump_seq = 0;
 static CFAbsoluteTime g_install_time = 0;
 static long g_trace_seconds = 600;      // draw/dispatch 记录时间盒；0=不限
-static double g_tb_min_vp = 1000.0;     // 主视口最小宽（FSR 低档内部渲染可到 1175；阴影视图 512、菜单占位 16）
+static double g_tb_min_vp = 64.0;     // Exclude tiny placeholders; match named TAA/depth/motion dimensions instead of a 4K-only width threshold.
 const char *bg3mf_home(void);           // LoadProbe 提供
 static char g_sentinel[PATH_MAX];
 static char g_capture_dir[PATH_MAX];
@@ -167,6 +163,7 @@ static IMP g_orig_drawIndexedInstanced;
 // Encoder 状态
 // ---------------------------------------------------------------------------
 @interface EncState : NSObject
+@property(nonatomic, strong) id computePSO;
 @property(nonatomic, strong) NSString *kind;      // render/compute/unknown
 @property(nonatomic, strong) NSString *pipeline;  // 描述字符串或 nil
 @property(nonatomic, strong) NSMutableDictionary *textures;  // "stage:slot" -> info
@@ -182,7 +179,6 @@ static IMP g_orig_drawIndexedInstanced;
 @property(nonatomic, strong) id<MTLTexture> dumpColorTex;    // TAA 当前帧色（draw 时确认）
 @property(nonatomic, strong) id<MTLTexture> dumpLinDepthSrc; // LinearizeDepth 输入（原始深度候选）
 @property(nonatomic, assign) BOOL tbJobPending;    // TAA 已被 TemporalBridge 接管，enc end 时编码
-@property(nonatomic, assign) BOOL tbEasuPending;   // EASU 已被接管，compute enc end 时编码
 @property(nonatomic, assign) BOOL hasViewport;
 @property(nonatomic, assign) MTLViewport viewport;
 @end
@@ -235,6 +231,7 @@ static NSDictionary *texture_info(id<MTLTexture> t) {
 
 static NSDictionary *buffer_info(id<MTLBuffer> b, NSUInteger offset) {
     if (!b) return nil;
+    if (!g_trace_enabled) return @{@"off": @(offset)};
     NSMutableDictionary *d = [@{
         @"ptr" : ptr_key((__bridge const void *)b),
         @"off" : @(offset),
@@ -264,6 +261,7 @@ static BOOL pipeline_is_interesting(NSString *info) {
 
 static void snapshot_and_log(id enc, EncState *st, const char *ev,
                              NSDictionary *extra) {
+    if (!g_trace_enabled) return;
     // 时间盒：超时后不再记录 draw/dispatch（防止长时间游玩产生巨量日志）。
     if (g_trace_seconds > 0 &&
         CFAbsoluteTimeGetCurrent() - g_install_time > (CFAbsoluteTime)g_trace_seconds) {
@@ -328,7 +326,7 @@ static NSString *lookup_func_name(id f) {
     pthread_mutex_lock(&g_lock);
     NSString *n = [g_func_names objectForKey:f];
     pthread_mutex_unlock(&g_lock);
-    return n;
+    return n ?: [(id<MTLFunction>)f name];
 }
 
 static id hook_newComputePSO(id self, SEL _cmd, id<MTLFunction> f, NSError **err) {
@@ -340,7 +338,6 @@ static id hook_newComputePSO(id self, SEL _cmd, id<MTLFunction> f, NSError **err
         pthread_mutex_lock(&g_lock);
         [g_pipeline_info setObject:info forKey:r];
         pthread_mutex_unlock(&g_lock);
-        if ([info isEqualToString:@"compute:FSR"]) bg3mf_tb_note_fsr_pipeline();
         bg3mf_trace_event(@{@"ev" : @"pipeline_create", @"ptr" : ptr_key((__bridge void *)r),
                             @"info" : info});
     }
@@ -438,7 +435,8 @@ static id hook_renderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *desc) {
 static id hook_computeEncoder(id self, SEL _cmd) {
     id r = ((id(*)(id, SEL))g_orig_computeEncoder)(self, _cmd);
     if (r) {
-        enc_state(r, @"compute");
+        EncState *st = enc_state(r, @"compute");
+        st.cbPtr = (__bridge void *)self;
         if (g_trace_all)
             bg3mf_trace_event(@{@"ev" : @"encoder_begin", @"kind" : @"compute",
                                 @"cb" : ptr_key((__bridge void *)self),
@@ -450,7 +448,8 @@ static id hook_computeEncoder(id self, SEL _cmd) {
 static id hook_computeEncoderDispatch(id self, SEL _cmd, NSUInteger dt) {
     id r = ((id(*)(id, SEL, NSUInteger))g_orig_computeEncoderDispatch)(self, _cmd, dt);
     if (r) {
-        enc_state(r, @"compute");
+        EncState *st = enc_state(r, @"compute");
+        st.cbPtr = (__bridge void *)self;
         if (g_trace_all)
             bg3mf_trace_event(@{@"ev" : @"encoder_begin", @"kind" : @"compute",
                                 @"dispatchType" : @(dt),
@@ -589,18 +588,20 @@ static void enc_end_common(id self) {
 }
 
 // compute/render encoder 的 endEncoding 分开 hook，各自 orig，互不串扰。
+// EASU 纹理抓取（burst 激活时由 TemporalBridge 调用，在同 cb 上追加 blit）。
+// 与 dump sentinel（touch runs/DUMP_NOW）共享 g_dump_burst 计数，
+// 复用 bg3mf_dump_tex（staging 拷贝 + 完成后写 raw + meta）。
+void bg3mf_dump_easu_textures(id inTex, id outTex, id cbObj) {
+    if (atomic_load(&g_dump_burst) <= 0) return;
+    id<MTLCommandBuffer> cb = (id<MTLCommandBuffer>)cbObj;
+    if (!cb) return;
+    if (inTex) bg3mf_dump_tex(cb, (id<MTLTexture>)inTex, "easuin");
+    if (outTex) bg3mf_dump_tex(cb, (id<MTLTexture>)outTex, "easuout");
+}
+
 static void hook_encEnd_compute(id self, SEL _cmd) {
-    EncState *st = nil;
-    pthread_mutex_lock(&g_lock);
-    st = [g_enc_state objectForKey:self];
-    pthread_mutex_unlock(&g_lock);
-    BOOL wantEasu = st && st.tbEasuPending;
     enc_end_common(self);
     ((void(*)(id, SEL))g_orig_encEnd_compute)(self, _cmd);
-    // orig 之后 encoder 已关闭，MetalFX 可以在同一 cb 上编码。
-    if (wantEasu) {
-        bg3mf_tb_encode_easu_if_pending(st.cbPtr);
-    }
 }
 static void hook_encEnd_render(id self, SEL _cmd) {
     EncState *st = nil;
@@ -626,6 +627,7 @@ static void hook_encEnd_render(id self, SEL _cmd) {
 // Hooks：compute encoder 状态与 dispatch
 // ---------------------------------------------------------------------------
 static void hook_setComputePipelineState(id self, SEL _cmd, id pso) {
+    enc_state(self, @"compute").computePSO = pso;
     pthread_mutex_lock(&g_lock);
     NSString *info = [g_pipeline_info objectForKey:pso];
     pthread_mutex_unlock(&g_lock);
@@ -639,7 +641,7 @@ static void hook_cSetTexture(id self, SEL _cmd, id<MTLTexture> t, NSUInteger idx
     NSString *key = [NSString stringWithFormat:@"c:%lu", (unsigned long)idx];
     pthread_mutex_lock(&g_lock);
     if (t) {
-        st.textures[key] = texture_info(t);
+        if (g_trace_enabled) st.textures[key] = texture_info(t);
         st.texObjects[key] = t;
     } else {
         [st.textures removeObjectForKey:key];
@@ -670,7 +672,7 @@ static void hook_cSetBytes(id self, SEL _cmd, const void *p, NSUInteger len,
     EncState *st = enc_state(self, @"compute");
     NSString *key = [NSString stringWithFormat:@"c:%lu", (unsigned long)idx];
     pthread_mutex_lock(&g_lock);
-    if (p && len > 0) st.bytes[key] = [NSData dataWithBytes:p length:len];
+    if (g_trace_enabled && p && len > 0) st.bytes[key] = [NSData dataWithBytes:p length:len];
     else [st.bytes removeObjectForKey:key];
     pthread_mutex_unlock(&g_lock);
     ((void(*)(id, SEL, const void *, NSUInteger, NSUInteger))g_orig_cSetBytes)(
@@ -687,7 +689,7 @@ static void hook_cSetTextures(id self, SEL _cmd, const __unsafe_unretained id<MT
                          (unsigned long)(range.location + i)];
         id<MTLTexture> t = texs ? texs[i] : nil;
         if (t) {
-            st.textures[key] = texture_info(t);
+            if (g_trace_enabled) st.textures[key] = texture_info(t);
             st.texObjects[key] = t;
         } else {
             [st.textures removeObjectForKey:key];
@@ -736,25 +738,22 @@ static void hook_cSetBufferOffset(id self, SEL _cmd, NSUInteger off, NSUInteger 
         self, _cmd, off, idx);
 }
 
-// EASU 抑制检查：compute:FSR 的 dispatch 被 TemporalBridge 接管时返回 YES。
-static BOOL easu_try_suppress(EncState *st) {
-    if (!st.pipeline || ![st.pipeline isEqualToString:@"compute:FSR"]) return NO;
-    if (!bg3mf_tb_is_enabled()) return NO;
-    id<MTLBuffer> cb8 = st.bufObjects[@"c:8"];
-    unsigned long off8 = 0;
-    NSDictionary *info8 = st.buffers[@"c:8"];
-    if (info8 && info8[@"off"]) off8 = [info8[@"off"] unsignedLongValue];
-    BOOL ok = bg3mf_tb_try_record_easu(
-        (__bridge void *)st.texObjects[@"c:0"],
-        (__bridge void *)st.texObjects[@"c:1"],
-        (__bridge void *)cb8, off8) != 0;
-    if (ok) st.tbEasuPending = YES;
+// Replace EASU inside its original encoder; stock RCAS remains in sequence.
+static BOOL easu_try_suppress(id encoder, EncState *st) {
+    if (!st.cbPtr || ![st.pipeline isEqualToString:@"compute:FSR"] || !bg3mf_tb_is_enabled()) return NO;
+    id pso = st.computePSO, in = st.texObjects[@"c:0"], out = st.texObjects[@"c:1"];
+    BOOL ok = bg3mf_tb_replace_easu((__bridge void *)encoder, (__bridge void *)in, (__bridge void *)out);
+    if (ok) {
+        [(id<MTLComputeCommandEncoder>)encoder setComputePipelineState:pso];
+        [(id<MTLComputeCommandEncoder>)encoder setTexture:in atIndex:0];
+        [(id<MTLComputeCommandEncoder>)encoder setTexture:out atIndex:1];
+    }
     return ok;
 }
 
 static void hook_cDispatchTG(id self, SEL _cmd, MTLSize tg, MTLSize tptg) {
     EncState *st = enc_state(self, @"compute");
-    BOOL suppress = easu_try_suppress(st);
+    BOOL suppress = easu_try_suppress(self, st);
     snapshot_and_log(self, st, "dispatch", @{
         @"threadgroups" : @[ @(tg.width), @(tg.height), @(tg.depth) ],
         @"threadsPerTG" : @[ @(tptg.width), @(tptg.height), @(tptg.depth) ],
@@ -765,7 +764,7 @@ static void hook_cDispatchTG(id self, SEL _cmd, MTLSize tg, MTLSize tptg) {
 
 static void hook_cDispatchThreads(id self, SEL _cmd, MTLSize threads, MTLSize tptg) {
     EncState *st = enc_state(self, @"compute");
-    BOOL suppress = easu_try_suppress(st);
+    BOOL suppress = easu_try_suppress(self, st);
     snapshot_and_log(self, st, "dispatchThreads", @{
         @"threads" : @[ @(threads.width), @(threads.height), @(threads.depth) ],
         @"threadsPerTG" : @[ @(tptg.width), @(tptg.height), @(tptg.depth) ],
@@ -790,7 +789,7 @@ static void r_set_tex(EncState *st, const char *stage, NSUInteger idx, id<MTLTex
     NSString *key = [NSString stringWithFormat:@"%s:%lu", stage, (unsigned long)idx];
     pthread_mutex_lock(&g_lock);
     if (t) {
-        st.textures[key] = texture_info(t);
+        if (g_trace_enabled) st.textures[key] = texture_info(t);
         st.texObjects[key] = t;
     } else {
         [st.textures removeObjectForKey:key];
@@ -817,7 +816,7 @@ static void r_set_bytes(EncState *st, const char *stage, NSUInteger idx, const v
                         NSUInteger len) {
     NSString *key = [NSString stringWithFormat:@"%s:%lu", stage, (unsigned long)idx];
     pthread_mutex_lock(&g_lock);
-    if (p && len > 0) st.bytes[key] = [NSData dataWithBytes:p length:len];
+    if (g_trace_enabled && p && len > 0) st.bytes[key] = [NSData dataWithBytes:p length:len];
     else [st.bytes removeObjectForKey:key];
     pthread_mutex_unlock(&g_lock);
 }
@@ -872,7 +871,7 @@ static void r_set_tex_range(id self, const char *stage,
                          (unsigned long)(range.location + i)];
         id<MTLTexture> t = texs ? texs[i] : nil;
         if (t) {
-            st.textures[key] = texture_info(t);
+            if (g_trace_enabled) st.textures[key] = texture_info(t);
             st.texObjects[key] = t;
         } else {
             [st.textures removeObjectForKey:key];
@@ -976,7 +975,6 @@ static BOOL log_draw(id self, const char *what, NSDictionary *args) {
                                              : "dump: vel att0 nil");
         }
         bg3mf_tb_note_velocity((__bridge void *)st.att0Tex);
-        bg3mf_tb_note_velocity((__bridge void *)st.att0Tex);
     } else if (st.pipeline && [st.pipeline containsString:@"PPTAA_PS"]) {
         if (atomic_load(&g_dump_burst) > 0) st.dumpColorTex = st.texObjects[@"f:0"];
         // 阶段 E：接管 TAA——记录输入并抑制原始 draw，encoder 结束时改由 MetalFX 写入。
@@ -986,12 +984,13 @@ static BOOL log_draw(id self, const char *what, NSDictionary *args) {
             unsigned long off8 = 0;
             NSDictionary *info8 = st.buffers[@"f:8"];
             if (info8 && info8[@"off"]) off8 = [info8[@"off"] unsignedLongValue];
-            suppress = bg3mf_tb_try_record_taa(
+            int scheduled = 0;
+            suppress = bg3mf_tb_record_taa(
                 (__bridge void *)st.texObjects[@"f:0"],
                 (__bridge void *)st.texObjects[@"f:2"],
                 (__bridge void *)st.att0Tex,
-                (__bridge void *)cb8, off8) != 0;
-            if (suppress) st.tbJobPending = YES;
+                (__bridge void *)cb8, off8, &scheduled) != 0;
+            if (scheduled) st.tbJobPending = YES;
         }
     } else if (st.pipeline && [st.pipeline containsString:@"LinearizeDepth"] &&
                st.hasViewport && st.viewport.width > g_tb_min_vp) {
@@ -1097,9 +1096,11 @@ void bg3mf_observer_install(void) {
 
         snprintf(g_runs_dir, sizeof(g_runs_dir), "%s/runs", bg3mf_home());
         snprintf(g_sentinel, sizeof(g_sentinel), "%s/DUMP_NOW", g_runs_dir);
-        snprintf(g_capture_dir, sizeof(g_capture_dir), "%s/capture", g_runs_dir);
+        snprintf(g_capture_dir, sizeof(g_capture_dir), "%s/capture_%d", g_runs_dir, getpid());
         // trace 默认关闭（发布版静默）；BG3MF_TRACE=1 显式开启（开发用）。
-        if (getenv("BG3MF_TRACE")) {
+        const char *trace = getenv("BG3MF_TRACE");
+        g_trace_enabled = trace && strcmp(trace, "1") == 0;
+        if (g_trace_enabled) {
             const char *log_dir = getenv("BG3MF_TRACE_DIR");
             char trace_path[1024];
             snprintf(trace_path, sizeof(trace_path),
@@ -1141,18 +1142,12 @@ void bg3mf_observer_install(void) {
         Class rendEncCls = object_getClass(re);
         [re endEncoding];
 
-        id<MTLLibrary> lib = [dev newDefaultLibrary];
-        if (!lib) {
-            // 无默认库（如命令行宿主）：尝试 dylib 旁随的 smokeinputs.metallib。
-            const char *self = bg3mf_self_path();
-            if (self && self[0]) {
-                NSString *dir = [[NSString stringWithUTF8String:self]
-                    stringByDeletingLastPathComponent];
-                NSString *p =
-                    [dir stringByAppendingPathComponent:@"smokeinputs.metallib"];
-                lib = [dev newLibraryWithURL:[NSURL fileURLWithPath:p] error:nil];
-            }
-        }
+        // Discover the library implementation without shipping a test metallib.
+        // Game bundles need not contain default.metallib. A tiny source library
+        // uses the same runtime compiler already needed by the depth bridge.
+        id<MTLLibrary> lib = [dev newLibraryWithSource:
+            @"#include <metal_stdlib>\nusing namespace metal; kernel void bg3mf_probe_kernel() {}"
+            options:nil error:nil];
         Class libCls = lib ? object_getClass(lib) : Nil;
 
         obs_logf("classes: device=%s queue=%s cb=%s compEnc=%s rendEnc=%s lib=%s",

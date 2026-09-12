@@ -80,3 +80,9 @@ target_compile_definitions(bg3mf_temporal_bridge_sim PRIVATE
   SMOKE_METALLIB_PATH="${SMOKE_METALLIB}")
 target_link_libraries(bg3mf_temporal_bridge_sim PRIVATE
   "-framework Foundation" "-framework Metal")
+
+add_executable(bg3mf_installer src/Installer.mm)
+target_compile_options(bg3mf_installer PRIVATE -fobjc-arc -Os -Wall -Wextra)
+target_link_libraries(bg3mf_installer PRIVATE "-framework Foundation" "-framework AppKit")
+add_custom_command(TARGET bg3mf_installer POST_BUILD
+  COMMAND /usr/bin/codesign --force --sign - "$<TARGET_FILE:bg3mf_installer>" VERBATIM)

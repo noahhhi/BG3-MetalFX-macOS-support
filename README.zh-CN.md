@@ -1,83 +1,108 @@
-# BG3 MetalFX（macOS 版）
+# BG3 MetalFX for macOS
 
 <p align="center">
   <a href="README.md">English</a> |
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-为 macOS Steam 版《博德之门 3》（AppID 1086940）在游戏内视频选项中原生加入 [MetalFX Temporal](https://developer.apple.com/cn/metal/MetalFX/) 时域超分。Mac 版自带的 AMD FSR 1.0 只是空间（单帧）升采样；本包将其替换为 Apple 的时域超分——通过跨多帧累积信息，从较低分辨率的渲染中重建接近原生品质的画面。
+为 macOS Steam 版《博德之门 3》（AppID 1086940）加入原生 [MetalFX Temporal](https://developer.apple.com/documentation/metalfx) 时域超分。它使用游戏的当前帧 HDR 颜色、运动矢量、深度与相机抖动，以 Apple 的时域重建替换 FSR 1.0 的空间放大。
 
-升频选项出现在游戏内 **选项 → 视频 → 升频类型 → MetalFX**，名称与描述按游戏自带的全部 15 种语言本地化。不修改任何游戏文件：全部通过 Steam 启动选项与标准 BG3 本地化 mod 实现。
+选择 **选项 → 视频 → 升频类型 → MetalFX**，并保持 **抗锯齿 → TAA**。名称与说明由覆盖游戏全部 15 种语言的本地化 mod 提供。注入通过 Steam 启动选项实现，不修改游戏 app 或存档。
 
-参考测试环境：Apple Silicon（M4 Pro）macOS 27，Steam 版《博德之门 3》（Patch 8，v4.1.1.7398727）。主菜单与游戏内渲染、镜头运动与存档兼容性均已通过本机测试。
+当前参考测试：Apple M4 Pro、macOS 27、原生 arm64 Steam 版本 **4.1.1.7398727**。极高品质与性能档已检查真实存档加载和 3D 渲染，四档内部渲染尺寸均已实机观察。测试覆盖及限制见[验证记录](docs/VALIDATION.md)。
 
-> **注意：** 安装包只包含修复组件。您必须已在 Steam 购买《博德之门 3》；本仓库不包含也不分发游戏本体。
+<p align="center">
+  <img src="docs/images/settings-metalfx-zh.png" alt="博德之门 3 视频设置中的 MetalFX 与中文说明" width="900">
+  <br>
+  <em>游戏原有视频设置中的 MetalFX 选项与本地化说明。</em>
+</p>
 
-## 各档位渲染比例
+<p align="center">
+  <img src="docs/images/ingame-metalfx-performance.png" alt="MetalFX Temporal 性能档渲染的真实游戏存档" width="900">
+  <br>
+  <em>真实存档中的性能档：从 1175 × 759 重建至 3456 × 2234。</em>
+</p>
 
-选择 MetalFX 后，各升频模式的内部渲染比例如下（较 FSR 1.0 同档位各降一级，契合 Apple 时域超分特性）：
+> **说明：** 安装包仅包含兼容性修复。你需要在 Steam 上拥有《博德之门 3》；本仓库不包含或分发游戏本体。
 
-| 升频模式 | 渲染比例 | 放大倍率 |
-|---|---|---|
-| 极高品质 | 67% | 1.5x |
-| 品质 | 59% | 1.7x |
-| 平衡 | 50% | 2.0x |
-| 性能 | 34% | 2.94x |
+## 系统要求
 
-升频类型选择 **关** 时，MetalFX Temporal 仍会以原生分辨率替换游戏 TAA，获得更高质量的抗锯齿。
-
-## 环境要求
-
-- Apple Silicon（arm64）Mac，macOS 13 或更高版本
-- 已通过 Steam 安装《博德之门 3》
+- 支持 MetalFX Temporal 的 Apple Silicon Mac（arm64），macOS 13 或更新版本。目前仅在上述参考设备上实测。
+- 原生 macOS Steam 版《博德之门 3》，版本 4.1.1.7398727。
+- 至少启动一次游戏以生成 Steam 与玩家配置；安装或卸载前退出**游戏和 Steam**。
+- 抗锯齿保持 **TAA**：mod 使用该渲染阶段及其相机抖动。SMAA 和关闭抗锯齿不会启用此时域路径。
 
 ## 一键安装
 
-从 [GitHub Releases](https://github.com/noahhhi/BG3-MetalFX-macOS-support/releases) 下载 `BG3-MetalFX-arm64.pkg` 并双击。安装包会把注入器与 Steam 启动包装器装入 `~/Library/Application Support/BG3MetalFX`，把本地化 mod 装入游戏的 `Mods` 目录并注册到 `modsettings.lsx`，同时配置好 Steam 启动选项。若 Steam 正在运行请重启，之后照常从 Steam 启动游戏，在 选项 → 视频 → 升频类型 中选择 **MetalFX**。
+从 [GitHub Releases](https://github.com/noahhhi/BG3-MetalFX-macOS-support/releases/latest) 下载 **`BG3-MetalFX-arm64.pkg`** 并双击。安装器将注入器、启动包装器和卸载器放入 `~/Library/Application Support/BG3MetalFX/`，将 `BG3MetalFX.pak` 放入用户 Mods 目录，在已有玩家配置中注册 mod，并仅更新《博德之门 3》的 Steam 启动选项。
 
-另提供便携版 `BG3-MetalFX-arm64.zip`：解压后运行 `bash install.sh`。
+重新打开 Steam，照常启动游戏，选择 **MetalFX** 并保持 **TAA**。加载已有存档时，游戏可能提示启用新增的 BG3MetalFX mod；该本地化 mod 不包含玩法改动。
+
+ZIP 是便携备用方案：解压 **`BG3-MetalFX-arm64.zip`** 后双击 **`Install BG3 MetalFX.command`**，或在解压目录执行 `bash install.sh`。两种方式使用同一个原生安装器，用户无需安装 Python、CMake 或 Xcode。
+
+安装器保留已有启动参数和其他 mod。配置文件无效时，在写入前停止安装。恢复备份保存在 `~/Library/Application Support/BG3MetalFX-backup/`。其中包含原配置，请勿公开上传。
 
 > [!IMPORTANT]
-> PKG 当前未签名（没有可用的 Developer ID Installer 证书）。若被 Gatekeeper 拦截，右键点击安装包选择**打开**，或在 **系统设置 → 隐私与安全性** 中允许。无需关闭 Gatekeeper。
+> PKG 尚未签名，二进制采用 ad-hoc 签名。如被 macOS 拦截，请在 **系统设置 → 隐私与安全性** 中允许安装；无需关闭 Gatekeeper 或降低系统安全性。
 
-若 PKG 报告安装失败，请在终端执行以下命令，它会在桌面生成 `BG3MF-install-log.txt`，提交 [GitHub issue](https://github.com/noahhhi/BG3-MetalFX-macOS-support/issues) 时附上该文件：
+如果 PKG 提示安装失败，以下命令会在桌面生成 `BG3MF-install-log.txt`。请检查内容后再附到 [GitHub issue](https://github.com/noahhhi/BG3-MetalFX-macOS-support/issues)。
 
 ```sh
 /usr/bin/grep -iE 'BG3 MetalFX|bg3mf|postinstall|error' /var/log/install.log | /usr/bin/tail -n 200 > "$HOME/Desktop/BG3MF-install-log.txt"
 ```
 
+## 各档位渲染比例
+
+| 升频模式 | 每轴渲染比例 | 放大倍率 | 3456 × 2234 输出下实测输入 |
+|---|---|---|---|
+| 极高品质 | 约 67% | 1.5× | 2304 × 1489 |
+| 品质 | 约 59% | 1.7× | 2032 × 1314 |
+| 平衡 | 50% | 2.0× | 1728 × 1117 |
+| 性能 | 约 34% | 2.94× | 1175 × 759 |
+
+这些是本 mod 选定的比例，比游戏原版 FSR 1.0 同名档位各降低一级，实际尺寸由游戏取整。如果修改视频选项后渲染目标未重建，请重启游戏。
+
+升频类型为 **关**、抗锯齿为 **TAA** 时，注入桥会以当前渲染分辨率提供 MetalFX 时域抗锯齿。
+
 ## 工作原理
 
-- 一个 Steam 启动选项包装器在游戏启动时前置 `DYLD_INSERT_LIBRARIES`，加载注入器（约 200 KB 的 dylib）。Steam、游戏二进制与存档均不受影响。
-- 注入器观测游戏的 Metal 命令流。FSR 1.0 链激活时，空间升采样 EASU dispatch 被替换为 `MTLFXTemporalScaler` 编码——使用游戏自己的 HDR 颜色、逐像素运动矢量、reversed-Z 深度与相机 jitter，写入同一输出纹理；原 RCAS 锐化 pass 仍在其后运行。升频关闭时，游戏 TAA draw 以原生分辨率同样替换。
-- FSR 1.0 画质档位比例表仅**在内存中**改写为上表所列渲染比例，磁盘上的游戏数据不变。
-- "MetalFX"名称与 Apple 风格描述来自一个标准 BG3 本地化 mod，覆盖游戏全部已发行语言中的两条既有字符串。
+- Steam 启动包装器通过 `DYLD_INSERT_LIBRARIES` 加载注入器，保留 Steam 自身的覆盖层注入与已有启动参数。
+- 在 TAA 阶段取得尚未经时间滤波的当前 HDR 颜色、运动矢量、转换为 R32Float 的设备深度，以及 jitter。MetalFX 在该 render encoder 结束后编码。
+- 到达 EASU 时，compute kernel 将重建后的 HDR 颜色压缩并写入游戏原有中间纹理。工作在原 compute encoder 内完成，先于未改动的 RCAS 锐化／逆压缩和后续消费者。其他消费者仍可使用原 TAA，但其滤波结果不会送入 MetalFX。
+- 检查映射地址与原值后，仅在进程内存中修改 FSR 档位比例表，不向磁盘打补丁。
+- 标准 LSPK v18 mod 为全部 15 种语言各包含两个 XML 字符串覆盖，遵循 [Larian 的本地化格式](https://docs.baldursgate3.game/index.php?title=Adding_Localisation)。
 
 ## 卸载
 
-运行 `uninstall.sh`（已安装到 `~/Library/Application Support/BG3MetalFX/`），或下载 Release 中的独立文件：
+退出游戏和 Steam，运行 ZIP 中的 `uninstall.sh`，或下载 Release 中的独立卸载脚本：
 
 ```sh
 bash ~/Downloads/uninstall.sh
 ```
 
-将移除 Steam 启动选项、本地化 mod 及其 `modsettings.lsx` 注册项、注入器目录。存档不受影响。
+脚本移除注入器、本地化 PAK 及 BG3MetalFX 自身的 mod 注册。当 BG3 启动选项仍与安装后的值一致时，恢复安装前的选项。其他游戏的启动选项、其他 mod，以及之后修改的无关配置都会保留。如果你在安装后编辑过 BG3 启动选项，卸载器会要求先移除包装器，避免覆盖你的修改。存档与恢复备份保留。
 
 ## 已知限制
 
-- 游戏需以显示器原生分辨率渲染（全屏或无边框）；更改显示器分辨率后需重启游戏。
-- 镜头切换与场景切换沿用 MetalFX 内建的历史重置启发式，偶有一帧柔化。
-- BG3 会把任何已注册 mod 视为 modded 档案（标准的 mod 提示；成就行为遵循游戏自身的 mod 规则）。
-- 不含帧生成；本包仅提供时域超分与抗锯齿。
+- v1.0.0 存在黑屏与本地化加载缺陷，请使用 v1.0.1 或更新版本。
+- 这是针对上述原生游戏版本的实验性注入。其他游戏版本、Intel/Rosetta、HDR 输出、分屏、多人联机及全部场景／特效尚未验证。
+- 必须保留 TAA。本项目不提供帧生成或解锁成就的补丁，遵循游戏通常的 mod／玩家配置规则。
+- 缩放器尺寸／格式变化和 GPU 错误会重置时域历史，尚未接入游戏明确的镜头切换／历史重置信号；切镜头或物体显露时可能短暂拖影或变软。
+- 参考游戏保留了原有的 10 FPS 上限。本次验证证明渲染与尺寸正确，**不代表解除限帧后的性能提升**，也不是通用画质对比。保留 10 FPS 上限的 [GPU 负载对照](docs/VALIDATION.md#保留-10-fps-上限的-gpu-负载对照)中，MetalFX 相比原生 TAA 的 GPU 活跃时间占比更低，但没有证明 GPU 功耗或发热更低。
+- 简体中文界面已实机检查；其他语言已打包并完成结构检查，未逐一进游戏验证。
 
 ## 从源码构建
+
+在 Apple Silicon 上安装 CMake、Python 3 和 Apple 命令行构建工具：
 
 ```sh
 cmake -S src -B src/build -DCMAKE_OSX_ARCHITECTURES=arm64
 cmake --build src/build
-scripts/build_pkg.sh   # 产出 dist/BG3-MetalFX-arm64.pkg
+bash scripts/build_pkg.sh
 ```
+
+产物位于 `dist/`，包含 PKG、便携 ZIP、`uninstall.sh` 与 `SHA256SUMS.txt`。着色器回归另需 Apple Metal 编译工具。测试命令见[验证记录](docs/VALIDATION.md)。
 
 ## 许可与致谢
 
-本项目以 [MIT License](LICENSE) 发布。《博德之门 3》由 Larian Studios 开发；MetalFX 由 Apple 提供。本工具为非官方兼容工具，不分发任何游戏资产。
+本项目采用 [MIT 许可证](LICENSE)。《博德之门 3》由 Larian Studios 开发，MetalFX 由 Apple 提供。本地化打包器依据 [Norbyte LSLib](https://github.com/Norbyte/lslib) 公开的格式实现。这是非官方兼容性工具，不分发游戏资产。
